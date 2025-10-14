@@ -96,15 +96,14 @@ func TestDownloadWithFixedRTT(t *testing.T) {
 	} {
 		t.Run(fmt.Sprintf("RTT %s", rtt), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				n := &simnet.Simnet{}
+				n := &simnet.Simnet{Router: &simnet.PerfectRouter{}}
+				addrA := &net.UDPAddr{IP: net.ParseIP("1.0.0.1"), Port: 9001}
+				addrB := &net.UDPAddr{IP: net.ParseIP("1.0.0.2"), Port: 9002}
+
 				settings := simnet.NodeBiDiLinkSettings{
 					Downlink: simnet.LinkSettings{BitsPerSecond: math.MaxInt, Latency: rtt / 4},
 					Uplink:   simnet.LinkSettings{BitsPerSecond: math.MaxInt, Latency: rtt / 4},
 				}
-
-				addrA := &net.UDPAddr{IP: net.ParseIP("1.0.0.1"), Port: 9001}
-				addrB := &net.UDPAddr{IP: net.ParseIP("1.0.0.2"), Port: 9002}
-
 				clientConn := n.NewEndpoint(addrA, settings)
 				defer clientConn.Close()
 				serverConn := n.NewEndpoint(addrB, settings)
