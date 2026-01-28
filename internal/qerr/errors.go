@@ -3,6 +3,7 @@ package qerr
 import (
 	"fmt"
 	"net"
+	"runtime/debug"
 
 	"github.com/quic-go/quic-go/internal/protocol"
 )
@@ -45,6 +46,8 @@ func (e *TransportError) Error() string {
 	if len(msg) == 0 {
 		return str
 	}
+
+	panic(fmt.Sprintf("my error\n%s", debug.Stack()))
 	return str + ": " + msg
 }
 

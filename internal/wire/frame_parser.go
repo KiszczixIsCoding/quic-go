@@ -3,11 +3,10 @@ package wire
 import (
 	"errors"
 	"fmt"
-	"io"
-
 	"github.com/quic-go/quic-go/internal/protocol"
 	"github.com/quic-go/quic-go/internal/qerr"
 	"github.com/quic-go/quic-go/quicvarint"
+	"io"
 )
 
 var errUnknownFrameType = errors.New("unknown frame type")
@@ -123,6 +122,8 @@ func (p *FrameParser) ParseLessCommonFrame(frameType FrameType, data []byte, v p
 	var frame Frame
 	var l int
 	var err error
+	fmt.Println("ABC")
+	println(uint64(frameType))
 	//nolint:exhaustive // Common frames should already be handled.
 	switch frameType {
 	case FrameTypePing:
@@ -132,6 +133,7 @@ func (p *FrameParser) ParseLessCommonFrame(frameType FrameType, data []byte, v p
 	case FrameTypeStopSending:
 		frame, l, err = parseStopSendingFrame(data, v)
 	case FrameTypeCrypto:
+		fmt.Println("Crypto")
 		frame, l, err = parseCryptoFrame(data, v)
 	case FrameTypeNewToken:
 		frame, l, err = parseNewTokenFrame(data, v)
@@ -165,10 +167,15 @@ func (p *FrameParser) ParseLessCommonFrame(frameType FrameType, data []byte, v p
 		frame, l, err = parseAckFrequencyFrame(data, v)
 	case FrameTypeImmediateAck:
 		frame = &ImmediateAckFrame{}
+	case FrameTypeTulCustom:
+		frame = &TulCustomFrame{}
 	default:
 		err = errUnknownFrameType
 	}
 	if err != nil {
+		println("frame")
+		println(frameType)
+		println(uint64(frameType))
 		return frame, l, &qerr.TransportError{
 			ErrorCode:    qerr.FrameEncodingError,
 			FrameType:    uint64(frameType),

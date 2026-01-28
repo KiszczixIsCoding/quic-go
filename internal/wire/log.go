@@ -2,10 +2,9 @@ package wire
 
 import (
 	"fmt"
-	"strings"
-
 	"github.com/quic-go/quic-go/internal/protocol"
 	"github.com/quic-go/quic-go/internal/utils"
+	"strings"
 )
 
 // LogFrame logs a frame, either sent or received
@@ -68,6 +67,8 @@ func LogFrame(logger utils.Logger, frame Frame, sent bool) {
 		logger.Debugf("\t%s &wire.RetireConnectionIDFrame{SequenceNumber: %d}", dir, f.SequenceNumber)
 	case *NewTokenFrame:
 		logger.Debugf("\t%s &wire.NewTokenFrame{Token: %#x}", dir, f.Token)
+	case *TulCustomFrame:
+		logger.Debugf("\t%s &wire.TulCustomFrame{Token: %#x}", dir)
 	default:
 		logger.Debugf("\t%s %#v", dir, frame)
 	}

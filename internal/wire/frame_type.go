@@ -33,9 +33,9 @@ const (
 	// https://datatracker.ietf.org/doc/draft-ietf-quic-reliable-stream-reset/07/
 	FrameTypeResetStreamAt FrameType = 0x24
 	// https://datatracker.ietf.org/doc/draft-ietf-quic-ack-frequency/11/
-	FrameTypeAckFrequency FrameType = 0xaf
-	FrameTypeImmediateAck FrameType = 0x1f
-
+	FrameTypeAckFrequency       FrameType = 0xaf
+	FrameTypeImmediateAck       FrameType = 0x1f
+	FrameTypeTulCustom          FrameType = 0x20
 	FrameTypeDatagramNoLength   FrameType = 0x30
 	FrameTypeDatagramWithLength FrameType = 0x31
 )

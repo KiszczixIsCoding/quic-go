@@ -1906,6 +1906,8 @@ func (c *Conn) handleFrame(
 		err = c.connIDGenerator.Retire(frame.SequenceNumber, destConnID, rcvTime.Add(3*c.rttStats.PTO(false)))
 	case *wire.HandshakeDoneFrame:
 		err = c.handleHandshakeDoneFrame(rcvTime)
+	case *wire.TulCustomFrame:
+		err = fmt.Errorf("Frame TulCustomFrame")
 	default:
 		err = fmt.Errorf("unexpected frame type: %s", reflect.ValueOf(&frame).Elem().Type().Name())
 	}
@@ -2823,6 +2825,13 @@ func (c *Conn) maxPacketSize() protocol.ByteCount {
 // AcceptStream returns the next stream opened by the peer, blocking until one is available.
 func (c *Conn) AcceptStream(ctx context.Context) (*Stream, error) {
 	return c.streamsMap.AcceptStream(ctx)
+}
+
+func (c *Conn) SendMyFrame(value uint64) {
+	fmt.Print("Hello")
+	f := &wire.TulCustomFrame{}
+	c.framer.QueueControlFrame(f)
+	c.scheduleSending()
 }
 
 // AcceptUniStream returns the next unidirectional stream opened by the peer, blocking until one is available.

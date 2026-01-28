@@ -12,6 +12,7 @@ import (
 	"math/big"
 
 	"github.com/quic-go/quic-go"
+	_ "github.com/quic-go/quic-go/http3"
 )
 
 const addr = "localhost:4242"
@@ -21,11 +22,12 @@ const message = "foobar"
 // We start a server echoing data on the first stream the client opens,
 // then connect with a client, send the message, and wait for its receipt.
 func main() {
-	go func() { log.Fatal(echoServer()) }()
-
-	if err := clientMain(); err != nil {
-		panic(err)
-	}
+	fmt.Println("QUIC echo server listening on", addr)
+	log.Fatal(echoServer())
+	//
+	//if err := clientMain(); err != nil {
+	//	panic(err)
+	//}
 }
 
 // Start a server that echos all data on the first stream opened by the client
@@ -36,20 +38,35 @@ func echoServer() error {
 	}
 	defer listener.Close()
 
-	conn, err := listener.Accept(context.Background())
-	if err != nil {
-		return err
-	}
+	fmt.Println("QUIC echo server listening on", addr)
 
-	stream, err := conn.AcceptStream(context.Background())
-	if err != nil {
-		panic(err)
-	}
-	defer stream.Close()
+	for {
+		conn, err := listener.Accept(context.Background())
+		if err != nil {
+			log.Printf("accept error: %v", err)
+			continue
+		}
 
-	// Echo through the loggingWriter
-	_, err = io.Copy(loggingWriter{stream}, stream)
-	return err
+		// Handle each connection in a new goroutine
+		go handleConnection(conn)
+	}
+}
+
+func handleConnection(conn *quic.Conn) {
+	defer conn.CloseWithError(0, "done")
+
+	for {
+		stream, err := conn.AcceptStream(context.Background())
+		if err != nil {
+			log.Printf("stream accept error: %v", err)
+			return
+		}
+
+		go func(s *quic.Stream) {
+			defer s.Close()
+			io.Copy(loggingWriter{s}, s)
+		}(stream)
+	}
 }
 
 func clientMain() error {
