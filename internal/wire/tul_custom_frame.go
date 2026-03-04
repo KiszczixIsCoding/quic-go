@@ -1,17 +1,47 @@
 package wire
 
-import (
-	"github.com/quic-go/quic-go/internal/protocol"
-)
+import "github.com/quic-go/quic-go/internal/protocol"
 
-// A TulCustomFrame is a TUL_CUSTOM frame
-type TulCustomFrame struct{}
+// A TulCustomFrame is a PING frame
+type TulCustomFrame struct {
+	Data []byte
+}
 
 func (f *TulCustomFrame) Append(b []byte, _ protocol.Version) ([]byte, error) {
-	return append(b, byte(FrameTypeTulCustom)), nil
+	b = append(b, byte(FrameTypeTulCustom))
+	b = append(b, f.Data...)
+
+	return b, nil
 }
 
 // Length of a written frame
 func (f *TulCustomFrame) Length(_ protocol.Version) protocol.ByteCount {
-	return 1
+	return 1 + protocol.ByteCount(len(f.Data))
 }
+
+//
+//type TulCustomFrame struct {
+//	Data []byte
+//}
+//
+////func (f *TulCustomFrame) Append(b []byte, _ protocol.Version) ([]byte, error) {
+////	return append(b, byte(FrameTypePing), 0xAA, 0xBB, 0xCC, 0xDD), nil
+////}
+////
+////// Length of a written frame
+////func (f *TulCustomFrame) Length(_ protocol.Version) protocol.ByteCount {
+////	println("TUL FRAME LENGTH")
+////	return 1 + 4
+////}
+//
+//func (f *TulCustomFrame) Append(b []byte, _ protocol.Version) ([]byte, error) {
+//	b = append(b, byte(FrameTypeTulCustom))
+//	b = append(b, f.Data...)
+//
+//	return b, nil
+//}
+//
+//// Length of a written frame
+//func (f *TulCustomFrame) Length(_ protocol.Version) protocol.ByteCount {
+//	return 1 + protocol.ByteCount(len(f.Data))
+//}

@@ -1,0 +1,54 @@
+Index: connection.go
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/connection.go b/connection.go
+--- a/connection.go	
++++ b/connection.go	(date 1772589051517)
+@@ -227,7 +227,7 @@
+ 	qlogger   qlogwriter.Recorder
+ 	logger    utils.Logger
+ 
+-	sendMyFrameChan          chan uint64
++	sendMyFrameChan          chan []byte
+ 	handleTulCustomFrameChan chan *wire.TulCustomFrame
+ }
+ 
+@@ -557,7 +557,7 @@
+ 	c.datagramQueue = newDatagramQueue(c.scheduleSending, c.logger)
+ 	c.connState.Version = c.version
+ 
+-	c.sendMyFrameChan = make(chan uint64, 1)
++	c.sendMyFrameChan = make(chan []byte, 1)
+ 	c.handleTulCustomFrameChan = make(chan *wire.TulCustomFrame, 10)
+ }
+ 
+@@ -663,6 +663,7 @@
+ 			case <-sendQueueAvailable:
+ 			// Moja custom zmiana
+ 			case <-c.sendMyFrameChan:
++				//case bytesBlock := <-c.sendMyFrameChan:
+ 				println("CHAN")
+ 				c.framer.QueueControlFrame(&wire.TulCustomFrame{
+ 					Data: []byte{0x00},
+@@ -1947,6 +1948,7 @@
+ 		err = c.handleHandshakeDoneFrame(rcvTime)
+ 	case *wire.TulCustomFrame:
+ 		println("TUL")
++		c.handleTulCustomFrameChan <- frame
+ 	default:
+ 		println("UNKNOWNERRORHANDLE")
+ 		err = fmt.Errorf("unexpected frame type: %s", reflect.ValueOf(&frame).Elem().Type().Name())
+@@ -2878,9 +2880,9 @@
+ 	return c.streamsMap.AcceptStream(ctx)
+ }
+ 
+-func (c *Conn) SendMyFrame(value uint64) {
++func (c *Conn) SendMyFrame(bytesBlock []byte) {
+ 	fmt.Print("Hello")
+-	c.sendMyFrameChan <- value
++	c.sendMyFrameChan <- bytesBlock
+ 	//f := &wire.TulCustomFrame{Timestamp: value}
+ 	//c.framer.QueueControlFrame(f)
+ 	//println("QueueControlPassed")

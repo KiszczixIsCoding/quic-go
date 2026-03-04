@@ -35,7 +35,7 @@ const (
 	// https://datatracker.ietf.org/doc/draft-ietf-quic-ack-frequency/11/
 	FrameTypeAckFrequency       FrameType = 0xaf
 	FrameTypeImmediateAck       FrameType = 0x1f
-	FrameTypeTulCustom          FrameType = 0x20
+	FrameTypeTulCustom          FrameType = 0x21
 	FrameTypeDatagramNoLength   FrameType = 0x30
 	FrameTypeDatagramWithLength FrameType = 0x31
 )
@@ -50,6 +50,10 @@ func (t FrameType) isValidRFC9000() bool {
 
 func (t FrameType) IsAckFrameType() bool {
 	return t == FrameTypeAck || t == FrameTypeAckECN
+}
+
+func (t FrameType) isMyCustomFrame() bool {
+	return t == FrameTypeTulCustom
 }
 
 func (t FrameType) IsDatagramFrameType() bool {
