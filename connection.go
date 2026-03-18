@@ -227,7 +227,7 @@ type Conn struct {
 	qlogger   qlogwriter.Recorder
 	logger    utils.Logger
 
-	sendMyFrameChan          chan uint64
+	sendMyFrameChan          chan []byte
 	handleTulCustomFrameChan chan *wire.TulCustomFrame
 }
 
@@ -557,7 +557,7 @@ func (c *Conn) preSetup() {
 	c.datagramQueue = newDatagramQueue(c.scheduleSending, c.logger)
 	c.connState.Version = c.version
 
-	c.sendMyFrameChan = make(chan uint64, 1)
+	c.sendMyFrameChan = make(chan []byte, 1)
 	c.handleTulCustomFrameChan = make(chan *wire.TulCustomFrame, 10)
 }
 
@@ -662,10 +662,11 @@ runLoop:
 			case <-c.sendingScheduled:
 			case <-sendQueueAvailable:
 			// Moja custom zmiana
-			case <-c.sendMyFrameChan:
+			case data := <-c.sendMyFrameChan:
+				//case bytesBlock := <-c.sendMyFrameChan:
 				println("CHAN")
 				c.framer.QueueControlFrame(&wire.TulCustomFrame{
-					Data: []byte{0x00},
+					Data: data,
 				})
 				println("CHAN1")
 				c.scheduleSending()
@@ -2879,9 +2880,9 @@ func (c *Conn) AcceptStream(ctx context.Context) (*Stream, error) {
 	return c.streamsMap.AcceptStream(ctx)
 }
 
-func (c *Conn) SendMyFrame(value uint64) {
+func (c *Conn) SendMyFrame(bytesBlock []byte) {
 	fmt.Print("Hello")
-	c.sendMyFrameChan <- value
+	c.sendMyFrameChan <- bytesBlock
 	//f := &wire.TulCustomFrame{Timestamp: value}
 	//c.framer.QueueControlFrame(f)
 	//println("QueueControlPassed")

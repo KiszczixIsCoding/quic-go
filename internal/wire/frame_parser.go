@@ -178,10 +178,10 @@ func (p *FrameParser) ParseLessCommonFrame(frameType FrameType, data []byte, v p
 		frame = &ImmediateAckFrame{}
 	case FrameTypeTulCustom:
 		println("MyFrame")
-		frame = &TulCustomFrame{
-			Data: []byte{0x05},
-		}
-		err = nil
+		fmt.Printf("data: %v, len=%d, nil? %v\n", data, len(data), data == nil)
+		payload := data[1:]
+		fmt.Printf(string(payload))
+		frame, l, err = parseTulCustomFrame(data, v)
 	default:
 		println("Unknown frame")
 		err = errUnknownFrameType

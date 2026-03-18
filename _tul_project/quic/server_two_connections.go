@@ -42,8 +42,8 @@ func main() {
 
 			<-c.HandshakeComplete()
 			//bytesBlock, _ := readFile(10)
-			//c.SendMyFrame([]byte{0x00})
-			c.SendMyFrame(1)
+			c.SendMyFrame([]byte{0x08, 0x04, 0x02})
+			//c.SendMyFrame(1)
 
 			//for {
 			//	stream, err := c.AcceptStream(ctx)

@@ -1,6 +1,9 @@
 package wire
 
-import "github.com/quic-go/quic-go/internal/protocol"
+import (
+	"github.com/quic-go/quic-go/internal/protocol"
+	"github.com/quic-go/quic-go/quicvarint"
+)
 
 // A TulCustomFrame is a PING frame
 type TulCustomFrame struct {
@@ -17,6 +20,14 @@ func (f *TulCustomFrame) Append(b []byte, _ protocol.Version) ([]byte, error) {
 // Length of a written frame
 func (f *TulCustomFrame) Length(_ protocol.Version) protocol.ByteCount {
 	return 1 + protocol.ByteCount(len(f.Data))
+}
+
+func parseTulCustomFrame(b []byte, _ protocol.Version) (*TulCustomFrame, int, error) {
+	_, l, _ := quicvarint.Parse(b)
+
+	return &TulCustomFrame{
+		Data: b,
+	}, l, nil
 }
 
 //
