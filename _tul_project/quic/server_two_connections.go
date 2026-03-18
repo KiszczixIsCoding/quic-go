@@ -21,7 +21,7 @@ func main() {
 		Tracer: qlog.DefaultConnectionTracer,
 	}
 
-	listener, err := quic.ListenAddr("localhost:4443", tls, quicConf)
+	listener, err := quic.ListenAddr("0.0.0.0:4443", tls, quicConf)
 
 	if err != nil {
 		log.Fatal(err)
