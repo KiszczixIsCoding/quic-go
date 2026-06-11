@@ -69,6 +69,8 @@ func LogFrame(logger utils.Logger, frame Frame, sent bool) {
 		logger.Debugf("\t%s &wire.NewTokenFrame{Token: %#x}", dir, f.Token)
 	case *TulCustomFrame:
 		logger.Debugf("\t%s &wire.TulCustomFrame{Token: %#x}", dir)
+	case *SplitDataFrame:
+		logger.Debugf("\t%s &wire.SplitDataFrame{Token: %#x}", dir)
 	default:
 		logger.Debugf("\t%s %#v", dir, frame)
 	}

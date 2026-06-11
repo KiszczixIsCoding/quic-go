@@ -52,16 +52,11 @@ func (p *FrameParser) ParseType(b []byte, encLevel protocol.EncryptionLevel) (Fr
 		}
 
 		ft := FrameType(typ)
-		fmt.Printf("parseFrames sees frame: 0x%x\n", ft)
 
 		valid := ft.isValidRFC9000() || ft.isMyCustomFrame() ||
 			(p.supportsDatagrams && ft.IsDatagramFrameType()) ||
 			(p.supportsResetStreamAt && ft == FrameTypeResetStreamAt) ||
 			(p.supportsAckFrequency && (ft == FrameTypeAckFrequency || ft == FrameTypeImmediateAck))
-
-		println("VALID")
-		println(valid)
-		println(ft.isAllowedAtEncLevel(encLevel))
 
 		if !valid {
 			return 0, parsed, &qerr.TransportError{
@@ -131,12 +126,9 @@ func (p *FrameParser) ParseLessCommonFrame(frameType FrameType, data []byte, v p
 	var l int
 	var err error
 
-	println(uint64(frameType))
-	println("PARSE MY FRAME")
 	//nolint:exhaustive // Common frames should already be handled.
 	switch frameType {
 	case FrameTypePing:
-		println("PINGI")
 		frame = &PingFrame{}
 	case FrameTypeResetStream:
 		frame, l, err = parseResetStreamFrame(data, false, v)
@@ -177,11 +169,12 @@ func (p *FrameParser) ParseLessCommonFrame(frameType FrameType, data []byte, v p
 	case FrameTypeImmediateAck:
 		frame = &ImmediateAckFrame{}
 	case FrameTypeTulCustom:
-		println("MyFrame")
 		fmt.Printf("data: %v, len=%d, nil? %v\n", data, len(data), data == nil)
-		payload := data[1:]
-		fmt.Printf(string(payload))
 		frame, l, err = parseTulCustomFrame(data, v)
+	case FrameTypeSplitData:
+		fmt.Printf("data: %v, len=%d, nil? %v\n", data, len(data), data == nil)
+		frame, l, err = parseSplitDataFrame(data, v)
+		err = nil
 	default:
 		println("Unknown frame")
 		err = errUnknownFrameType

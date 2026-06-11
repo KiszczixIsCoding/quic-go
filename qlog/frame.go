@@ -54,6 +54,8 @@ type (
 	ImmediateAckFrame = wire.ImmediateAckFrame
 	// An TulCustomFrame is an TUL_CUSTOM frame.
 	TulCustomFrame = wire.TulCustomFrame
+	// An SplitDataFrame is an SPLIT_DATA frame.
+	SplitDataFrame = wire.SplitDataFrame
 )
 
 type AckRange = wire.AckRange
@@ -137,6 +139,9 @@ func (f Frame) Encode(enc *jsontext.Encoder) error {
 		return encodeImmediateAckFrame(enc, frame)
 	case *TulCustomFrame:
 		return encodeTulCustomFrame(enc, frame)
+	case *SplitDataFrame:
+		return encodeSplitDataFrame(enc, frame)
+
 	default:
 		panic("unknown frame type")
 	}
@@ -489,6 +494,15 @@ func encodeTulCustomFrame(enc *jsontext.Encoder, _ *TulCustomFrame) error {
 	h.WriteToken(jsontext.BeginObject)
 	h.WriteToken(jsontext.String("frame_type"))
 	h.WriteToken(jsontext.String("tul_custom"))
+	h.WriteToken(jsontext.EndObject)
+	return h.err
+}
+
+func encodeSplitDataFrame(enc *jsontext.Encoder, _ *SplitDataFrame) error {
+	h := encoderHelper{enc: enc}
+	h.WriteToken(jsontext.BeginObject)
+	h.WriteToken(jsontext.String("frame_type"))
+	h.WriteToken(jsontext.String("split_data"))
 	h.WriteToken(jsontext.EndObject)
 	return h.err
 }

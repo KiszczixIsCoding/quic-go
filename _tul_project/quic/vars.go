@@ -1,0 +1,11 @@
+package main
+
+var (
+	LOCAL_IP_ADDRESS   = "localhost:4443"
+	LOCAL_2_IP_ADDRESS = "localhost:4444"
+	//AZURE_IP_ADDRESS   = "20.107.170.9:4443"
+	AZURE_IP_ADDRESS   = "localhost:4444"
+	TUL_IP_ADDRESS     = "123.333.3.33:2324"
+	CURRENT_IP_ADDRESS = LOCAL_IP_ADDRESS
+	FRAME_SIZE         = 1360
+)

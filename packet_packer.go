@@ -273,7 +273,7 @@ func (p *packetPacker) packConnectionClose(
 		}
 		if encLevel == protocol.Encryption1RTT {
 			shp, err := p.appendShortHeaderPacket(buffer, connID, oneRTTPacketNumber, oneRTTPacketNumberLen, keyPhase, payloads[i], 0, maxPacketSize, sealers[i], false, v)
-			println("AFTER LOOP")
+
 			if err != nil {
 				return nil, err
 			}
@@ -451,7 +451,6 @@ func (p *packetPacker) PackCoalescedPacket(onlyAck bool, maxSize protocol.ByteCo
 		packet.longHdrPackets = append(packet.longHdrPackets, longHdrPacket)
 	} else if oneRTTPayload.length > 0 {
 		shp, err := p.appendShortHeaderPacket(buffer, connID, oneRTTPacketNumber, oneRTTPacketNumberLen, kp, oneRTTPayload, 0, maxSize, oneRTTSealer, false, v)
-		println("IF")
 		if err != nil {
 			return nil, err
 		}
@@ -464,7 +463,6 @@ func (p *packetPacker) PackCoalescedPacket(onlyAck bool, maxSize protocol.ByteCo
 // It should be called after the handshake is confirmed.
 func (p *packetPacker) PackAckOnlyPacket(maxSize protocol.ByteCount, now monotime.Time, v protocol.Version) (shortHeaderPacket, *packetBuffer, error) {
 	buf := getPacketBuffer()
-	println("PACK ACK")
 	packet, err := p.appendPacket(buf, true, maxSize, now, v)
 	return packet, buf, err
 }
@@ -495,7 +493,6 @@ func (p *packetPacker) appendPacket(
 	}
 	kp := sealer.KeyPhase()
 
-	println("PRE LOOP")
 	return p.appendShortHeaderPacket(buf, connID, pn, pnLen, kp, pl, 0, maxPacketSize, sealer, false, v)
 }
 
@@ -610,14 +607,6 @@ func (p *packetPacker) maybeGetAppDataPacket(
 	v protocol.Version,
 ) payload {
 	pl := p.composeNextPacket(maxPayloadSize, onlyAck, ackAllowed, now, v)
-
-	for _, v := range pl.frames {
-		fmt.Printf("%T\n", v.Frame)
-	}
-
-	for _, v := range pl.streamFrames {
-		fmt.Printf("%T\n", v.Frame)
-	}
 
 	// check if we have anything to send
 	if len(pl.frames) == 0 && len(pl.streamFrames) == 0 {
@@ -803,7 +792,7 @@ func (p *packetPacker) packPTOProbePacket1RTT(maxPacketSize protocol.ByteCount, 
 	buffer := getPacketBuffer()
 	packet := &coalescedPacket{buffer: buffer}
 	shp, err := p.appendShortHeaderPacket(buffer, connID, pn, pnLen, kp, pl, 0, maxPacketSize, s, false, v)
-	print("PT0")
+
 	if err != nil {
 		return nil, err
 	}
@@ -826,7 +815,6 @@ func (p *packetPacker) PackMTUProbePacket(ping ackhandler.Frame, size protocol.B
 	padding := size - p.shortHeaderPacketLength(connID, pnLen, pl) - protocol.ByteCount(s.Overhead())
 	kp := s.KeyPhase()
 	packet, err := p.appendShortHeaderPacket(buffer, connID, pn, pnLen, kp, pl, padding, size, s, true, v)
-	print("MTU")
 	return packet, buffer, err
 }
 
@@ -847,7 +835,7 @@ func (p *packetPacker) PackPathProbePacket(connID protocol.ConnectionID, frames 
 	}
 	padding := protocol.MinInitialPacketSize - p.shortHeaderPacketLength(connID, pnLen, payload) - protocol.ByteCount(s.Overhead())
 	packet, err := p.appendShortHeaderPacket(buf, connID, pn, pnLen, s.KeyPhase(), payload, padding, protocol.MinInitialPacketSize, s, false, v)
-	print("PROBE")
+
 	if err != nil {
 		return shortHeaderPacket{}, nil, err
 	}
@@ -954,11 +942,6 @@ func (p *packetPacker) appendShortHeaderPacket(
 
 	if newPN := p.pnManager.PopPacketNumber(protocol.Encryption1RTT); newPN != pn {
 		return shortHeaderPacket{}, fmt.Errorf("packetPacker BUG: Peeked and Popped packet numbers do not match: expected %d, got %d", pn, newPN)
-	}
-
-	for _, v := range pl.frames {
-		println("LOOP")
-		fmt.Printf("%T\n", v.Frame)
 	}
 
 	return shortHeaderPacket{

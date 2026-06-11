@@ -1,6 +1,8 @@
 package wire
 
-import "github.com/quic-go/quic-go/internal/protocol"
+import (
+	"github.com/quic-go/quic-go/internal/protocol"
+)
 
 type FrameType uint64
 
@@ -36,6 +38,7 @@ const (
 	FrameTypeAckFrequency       FrameType = 0xaf
 	FrameTypeImmediateAck       FrameType = 0x1f
 	FrameTypeTulCustom          FrameType = 0x21
+	FrameTypeSplitData          FrameType = 0x22
 	FrameTypeDatagramNoLength   FrameType = 0x30
 	FrameTypeDatagramWithLength FrameType = 0x31
 )
@@ -53,7 +56,7 @@ func (t FrameType) IsAckFrameType() bool {
 }
 
 func (t FrameType) isMyCustomFrame() bool {
-	return t == FrameTypeTulCustom
+	return t == FrameTypeTulCustom || t == FrameTypeSplitData
 }
 
 func (t FrameType) IsDatagramFrameType() bool {

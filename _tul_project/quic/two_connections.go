@@ -7,51 +7,296 @@ import (
 	"fmt"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/qlog"
+	"io"
 	"log"
+	"main/quic/utils"
 	"os"
 	"os/signal"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
-func readLoop(name string, s *quic.Stream) {
-	buf := make([]byte, 4096)
+type Range struct {
+	Start int64
+	End   int64
+}
+
+type Stats struct {
+	mu                sync.Mutex
+	totalBytesRead    int64
+	readCount         int64
+	startTime         time.Time
+	minThroughput     float64
+	maxThroughput     float64
+	currentThroughput float64
+	minLatency        time.Duration
+	maxLatency        time.Duration
+	latencySum        time.Duration
+}
+
+func NewStats() *Stats {
+	return &Stats{
+		startTime: time.Now(),
+	}
+}
+
+func (st *Stats) RecordRead(bytesRead int, latency time.Duration) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	st.totalBytesRead += int64(bytesRead)
+	st.readCount++
+
+	// Throughput z tego read'a
+	if latency.Seconds() > 0 {
+		throughput := float64(bytesRead) / latency.Seconds() / 1024 / 1024 // MB/s
+		st.currentThroughput = throughput
+		if st.minThroughput == 0 || throughput < st.minThroughput {
+			st.minThroughput = throughput
+		}
+		if throughput > st.maxThroughput {
+			st.maxThroughput = throughput
+		}
+	}
+
+	// Latency
+	if st.minLatency == 0 || latency < st.minLatency {
+		st.minLatency = latency
+	}
+	if latency > st.maxLatency {
+		st.maxLatency = latency
+	}
+	st.latencySum += latency
+}
+
+func (st *Stats) GetCurrentThroughput() float64 {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.currentThroughput
+}
+
+func (st *Stats) PrintStats(connID string, currentThroughput float64, currentLatency time.Duration) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	// Średnia przepustowość od startu
+	elapsedSeconds := time.Since(st.startTime).Seconds()
+	var avgThroughput float64
+	if elapsedSeconds > 0 {
+		avgThroughput = float64(st.totalBytesRead) / elapsedSeconds / 1024 / 1024 // MB/s
+	}
+
+	// Średnie opóźnienie
+	var avgLatency time.Duration
+	if st.readCount > 0 {
+		avgLatency = st.latencySum / time.Duration(st.readCount)
+	}
+
+	fmt.Printf("[%s] STATS:\n", connID)
+	fmt.Printf("  Przepustowość: aktualna=%.2f MB/s, min=%.2f MB/s, max=%.2f MB/s, avg=%.2f MB/s\n",
+		currentThroughput, st.minThroughput, st.maxThroughput, avgThroughput)
+	fmt.Printf("  Opóźnienie:    aktualne=%v, min=%v, max=%v, avg=%v\n",
+		currentLatency, st.minLatency, st.maxLatency, avgLatency)
+}
+
+type ReceivedRanges struct {
+	mu            sync.Mutex
+	ranges        []Range
+	currentOffset int64
+}
+
+func (rr *ReceivedRanges) AddRange(start, end int64) {
+	rr.mu.Lock()
+	defer rr.mu.Unlock()
+	rr.ranges = append(rr.ranges, Range{Start: start, End: end})
+	if end > rr.currentOffset {
+		rr.currentOffset = end
+	}
+}
+
+func (rr *ReceivedRanges) GetRanges() []Range {
+	rr.mu.Lock()
+	defer rr.mu.Unlock()
+	result := make([]Range, len(rr.ranges))
+	copy(result, rr.ranges)
+	return result
+}
+
+func (rr *ReceivedRanges) GetCurrentOffset() int64 {
+	rr.mu.Lock()
+	defer rr.mu.Unlock()
+	return rr.currentOffset
+}
+
+// IsRangeCovered sprawdza czy dany zakres jest już pokryty
+func (rr *ReceivedRanges) IsRangeCovered(start, end int64) bool {
+	rr.mu.Lock()
+	defer rr.mu.Unlock()
+	for _, r := range rr.ranges {
+		if r.Start <= start && r.End >= end {
+			return true
+		}
+	}
+	return false
+}
+
+// GetUncoveredPortion zwraca część zakresu [start, end) która nie jest jeszcze pokryta
+// Zwraca (newStart, newEnd, isCovered)
+// Jeśli cały zakres jest pokryty, isCovered = true
+// Jeśli część jest pokryta, zwraca niezakrytą część
+func (rr *ReceivedRanges) GetUncoveredPortion(start, end int64) (int64, int64, bool) {
+	rr.mu.Lock()
+	defer rr.mu.Unlock()
+
+	// Sprawdź czy cały zakres jest pokryty
+	for _, r := range rr.ranges {
+		if r.Start <= start && r.End >= end {
+			return 0, 0, true
+		}
+	}
+
+	// Jeśli żaden zakres nie pokrywa - zwróć cały zakres
+	for _, r := range rr.ranges {
+		if r.Start <= start && r.End > start {
+			// Część jest pokryta od r.End
+			if r.End >= end {
+				return 0, 0, true
+			}
+			return r.End, end, false
+		}
+	}
+
+	// Nic nie pokrywa, zwróć cały zakres
+	return start, end, false
+}
+
+func formatConnStats(conn *quic.Conn) string {
+	c := conn.ConnectionStats()
+	return fmt.Sprintf(
+		`========== QUIC Connection Stats ==========
+%-20s : %v
+%-20s : %v
+%-20s : %v
+%-20s : %v
+---------- Traffic ----------
+%-20s : %d bytes
+%-20s : %d packets
+%-20s : %d bytes
+%-20s : %d packets
+%-20s : %d bytes
+%-20s : %d packets
+============================================`,
+		"Min RTT", c.MinRTT,
+		"Latest RTT", c.LatestRTT,
+		"Smoothed RTT", c.SmoothedRTT,
+		"Mean Deviation", c.MeanDeviation,
+		"Bytes Sent", c.BytesSent,
+		"Packets Sent", c.PacketsSent,
+		"Bytes Received", c.BytesReceived,
+		"Packets Received", c.PacketsReceived,
+		"Bytes Lost", c.BytesLost,
+		"Packets Lost", c.PacketsLost,
+	)
+}
+
+type Data struct {
+	ConnID   string
+	StreamID int64
+	Payload  []byte
+}
+
+type SharedStateClient struct {
+	mu              sync.RWMutex
+	FileOffset      uint64 // Offset in file
+	BlockOffset     uint64
+	BlockSize       uint64
+	ServerBlockSize uint64
+}
+
+func handleClientConn(ctx context.Context, conn *quic.Conn, connID string, out chan<- Data, ranges *ReceivedRanges, stats *Stats, finished *atomic.Bool, currentOffset *atomic.Uint64) {
+	defer close(out)
+	fmt.Println("Handle connection: ", connID)
+	fileSize := utils.GetFileSize("../movie.mp4")
+
 	for {
-		n, err := s.Read(buf)
+		select {
+		case <-ctx.Done():
+			fmt.Printf("[%s] handleClientConn: ctx.Done()\n", connID)
+			return
+		default:
+		}
+
+		stream, err := conn.AcceptUniStream(ctx)
 		if err != nil {
 			return
 		}
-		log.Printf("[%s] %s", name, buf[:n])
+
+		go func(s *quic.ReceiveStream) {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
+				readStartTime := time.Now()
+
+				headerBuf := make([]byte, 8)
+				_, err := io.ReadFull(s, headerBuf)
+				if err != nil {
+					return
+				}
+				fileOffset := binary.BigEndian.Uint64(headerBuf)
+
+				// 2. Czytaj length (8 bajtów)
+				lengthBuf := make([]byte, 8)
+				io.ReadFull(s, lengthBuf)
+				dataLength := binary.BigEndian.Uint64(lengthBuf)
+
+				// 3. Czytaj dokładnie tyle danych
+				dataBuf := make([]byte, dataLength)
+				io.ReadFull(s, dataBuf)
+				fmt.Println("SIZES: ", fileOffset, dataLength, len(dataBuf))
+
+				readLatency := time.Since(readStartTime)
+
+				// Oblicz przepustowość
+				var currentThroughput float64
+				if readLatency.Seconds() > 0 {
+					currentThroughput = float64(len(dataBuf)) / readLatency.Seconds() / 1024 / 1024 // kB/s
+				}
+
+				fmt.Println("[%s] Otrzymałem packet: offset=%d, dataSize=%d, throughput=%d", connID, fileOffset, len(dataBuf), currentThroughput)
+
+				// Zapisz statystyki
+				stats.RecordRead(len(dataBuf), readLatency)
+				stats.PrintStats(connID, currentThroughput, readLatency)
+
+				// Zaktualizuj zakresy
+				rangeStart := int64(fileOffset)
+				rangeEnd := int64(fileOffset) + int64(dataLength)
+				ranges.AddRange(rangeStart, rangeEnd)
+
+				// Zaktualizuj currentOffset dla tego połączenia
+				currentOffset.Add(dataLength)
+
+				// Sprawdź czy cały plik został odebrany (łącznie z obu połączeń)
+				if ranges.GetCurrentOffset() >= int64(fileSize) {
+					fmt.Println(currentOffset.Load())
+					fmt.Printf("KLIENT [%s]: cały plik odebrany! (rangesOffset=%d / fileSize=%d)\n", connID, ranges.GetCurrentOffset(), fileSize)
+					finished.Store(true)
+					return
+				}
+			}
+		}(stream)
 	}
 }
 
-func saveFile(data []byte) {
-	file, err := os.OpenFile(
-		"output.bin",
-		os.O_APPEND|os.O_CREATE|os.O_WRONLY,
-		0644,
-	)
+func runConnection(addr string, connID string, wg *sync.WaitGroup, out chan<- ConnResult, ranges *ReceivedRanges, stats *Stats, finished *atomic.Bool) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer func(file *os.File) {
-		err := file.Close()
-		if err != nil {
-
-		}
-	}(file)
-
-	n, err := file.Write(data)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	if n != len(data) {
-		log.Fatal("nie zapisano wszystkich bajtów")
-	}
-}
-
-func main() {
-	ctx := context.Background()
 	tlsConf := &tls.Config{
 		InsecureSkipVerify: true,
 		NextProtos:         []string{"quic-echo-example"},
@@ -61,48 +306,127 @@ func main() {
 		Tracer: qlog.DefaultConnectionTracer,
 	}
 
+	defer wg.Done()
+	connAzure, err := quic.DialAddr(ctx, addr, tlsConf, quicConf)
+	if err != nil {
+		log.Println("azure err:", err)
+		return
+	}
+
+	currentOffset := &atomic.Uint64{}
+	out <- ConnResult{
+		ID:            connID,
+		Conn:          connAzure,
+		CurrentOffset: currentOffset,
+	}
+	channel := make(chan Data, 100)
+
+	go handleClientConn(ctx, connAzure, connID, channel, ranges, stats, finished, currentOffset)
+
+	for data := range channel {
+		fmt.Printf("[conn2][%d]: %s\n", data.StreamID, string(data.Payload))
+	}
+}
+
+type ConnResult struct {
+	ID            string
+	Conn          *quic.Conn
+	Err           error
+	CurrentOffset *atomic.Uint64
+}
+
+func main() {
+	//var wg sync.WaitGroup
 	done := make(chan struct{})
 
-	go func() {
-		defer close(done)
-		log.Println("Dialing :4443")
-		conn, err := quic.DialAddr(ctx, "localhost:4443", tlsConf, quicConf)
-		if err != nil {
-			log.Println("FAILED :4443:", err.Error())
-			return
+	var wg sync.WaitGroup
+	wg.Add(2)
+	connCh := make(chan ConnResult, 2)
+	ranges := &ReceivedRanges{}
+	stats1 := NewStats()
+	stats2 := NewStats()
+	var finished atomic.Bool
+
+	go runConnection(LOCAL_IP_ADDRESS, "conn1", &wg, connCh, ranges, stats1, &finished)
+	go runConnection(LOCAL_2_IP_ADDRESS, "conn2", &wg, connCh, ranges, stats2, &finished)
+
+	//go func() {
+	conn1, conn2 := <-connCh, <-connCh
+	abc := 0
+	cde := 1
+	currentProgress := uint64(0) // ⬅️ TUTAJ - zmienna przed pętlą
+	frameNumber := 0             // ⬅️ LICZNIK RAMEK
+
+	for {
+		if finished.Load() {
+			fmt.Println("KLIENT: plik w całości odebrany, zatrzymuję wysyłanie SplitDataFrame")
+			break
 		}
 
-		for frame := range conn.GetTulCustomFrameChannel() {
-			fmt.Println("🔥 Otrzymałem 0x21")
-			data := frame.Data
-			fmt.Println("Payload raw:", data)
+		frameNumber++ // ⬅️ INKREMENTUJ NA STARCIE ITERACJI
+		rtt1 := conn1.Conn.ConnectionStats().SmoothedRTT
+		rtt2 := conn2.Conn.ConnectionStats().SmoothedRTT
 
-			// jeśli to string
-			fmt.Println("As string:", string(data))
-
-			// jeśli to liczba uint32
-			if len(data) >= 4 {
-				value := binary.BigEndian.Uint32(data[:4])
-				fmt.Println("Odczytana liczba:", value)
+		minSRTT := func() time.Duration {
+			if rtt1 < rtt2 {
+				return rtt1
 			}
-			//saveFile(data)
+			return rtt2
+		}()
+
+		//if minSRTT < 10*time.Millisecond {
+		//	minSRTT = 10 * time.Millisecond
+		//}
+
+		fmt.Println("Min sRTT: ", minSRTT)
+		time.Sleep(minSRTT)
+		throughput1 := stats1.GetCurrentThroughput()
+		throughput2 := stats2.GetCurrentThroughput()
+
+		var curr1, curr2 uint64
+		MTU := 1200
+
+		// Oblicz curr1 i curr2 na bazie stosunku throughput'u
+		totalThroughput := throughput1 + throughput2
+		totalBlockSize := uint64(50 * MTU)
+
+		if totalThroughput > 0 {
+			// Stosunek przepustowości
+			curr1 = uint64((throughput1 / totalThroughput) * float64(totalBlockSize))
+			curr2 = totalBlockSize - curr1
+		} else {
+			// Jeśli brak danych, równy podział
+			curr1 = totalBlockSize / 2
+			curr2 = totalBlockSize / 2
 		}
 
-		for {
-			fmt.Println("AcceptSTREAM")
-			stream, err := conn.AcceptStream(ctx)
-			if err != nil {
-				log.Println("Stream accept error:", err)
-				break
-			}
-			fmt.Println("AcceptBUFF")
-			buf := make([]byte, 4096)
-			n, _ := stream.Read(buf)
-			fmt.Println("Data received:", buf[:n])
-		}
+		fmt.Println("throughput 1 ", throughput1)
+		fmt.Println("throughput 2 ", throughput2)
+		fmt.Println("curr1 ", curr1)
+		fmt.Println("curr2 ", curr2)
+		fmt.Printf("KLIENT: wysyłam SplitDataFrame #%d - curr1=%d, curr2=%d\n", frameNumber, curr1, curr2)
 
-		log.Println("CONNECTED :4443")
-	}()
+		//if totalThroughput > 0 {
+		//curr1 = uint64(25 * MTU)
+		//curr2 = uint64(25 * MTU)
+		go conn1.Conn.SendSplitDataFrame(conn1.CurrentOffset.Load(), 0, uint64(50*MTU), curr1)
+		go conn2.Conn.SendSplitDataFrame(conn2.CurrentOffset.Load(), curr1, uint64(50*MTU), curr2)
+		//}
+
+		fmt.Printf("KLIENT: wysłano SplitDataFrame #%d\n", frameNumber)
+
+		// Inkrementuj currentProgress
+		currentProgress += totalBlockSize
+
+		abc = abc + 1
+		cde = cde + 1
+		// Wyświetl aktualne zakresy3
+		currentRanges := ranges.GetRanges()
+		fmt.Printf("Aktualne zakresy: %v\n", currentRanges)
+
+	}
+	//}()
+	wg.Wait()
 
 	// teraz main czeka bez deadlocka
 	sig := make(chan os.Signal, 1)

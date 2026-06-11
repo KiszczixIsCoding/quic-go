@@ -10,7 +10,6 @@ import (
 	"net"
 	"reflect"
 	"slices"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -228,7 +227,9 @@ type Conn struct {
 	logger    utils.Logger
 
 	sendMyFrameChan          chan []byte
+	sendSplitDataFrameChan   chan *wire.SplitDataFrame
 	handleTulCustomFrameChan chan *wire.TulCustomFrame
+	handleSplitDataFrameChan chan *wire.SplitDataFrame
 }
 
 var _ streamSender = &Conn{}
@@ -557,8 +558,10 @@ func (c *Conn) preSetup() {
 	c.datagramQueue = newDatagramQueue(c.scheduleSending, c.logger)
 	c.connState.Version = c.version
 
-	c.sendMyFrameChan = make(chan []byte, 1)
+	c.sendMyFrameChan = make(chan []byte, 100)
+	c.sendSplitDataFrameChan = make(chan *wire.SplitDataFrame, 10)
 	c.handleTulCustomFrameChan = make(chan *wire.TulCustomFrame, 10)
+	c.handleSplitDataFrameChan = make(chan *wire.SplitDataFrame, 10)
 }
 
 // run the connection main loop
@@ -664,11 +667,22 @@ runLoop:
 			// Moja custom zmiana
 			case data := <-c.sendMyFrameChan:
 				//case bytesBlock := <-c.sendMyFrameChan:
-				println("CHAN")
 				c.framer.QueueControlFrame(&wire.TulCustomFrame{
 					Data: data,
 				})
-				println("CHAN1")
+				c.scheduleSending()
+			case frame := <-c.sendSplitDataFrameChan:
+				print("SPLIT CONNECTION")
+				c.framer.QueueControlFrame(frame)
+				//c.framer.QueueControlFrame(&wire.SplitDataFrame{
+				//	FileOffset:      1,
+				//	BlockOffset:     1,
+				//	BlockSize:       1,
+				//	ServerBlockSize: 1,
+				//})
+				//c.framer.QueueControlFrame(&wire.TulCustomFrame{
+				//	Data: []byte{0x04},
+				//})
 				c.scheduleSending()
 			case <-c.notifyReceivedPacket:
 				wasProcessed, err := c.handlePackets()
@@ -940,6 +954,10 @@ func (c *Conn) GetTulCustomFrameChannel() <-chan *wire.TulCustomFrame {
 	return c.handleTulCustomFrameChan
 }
 
+func (c *Conn) GetSplitDataFrameChannel() <-chan *wire.SplitDataFrame {
+	return c.handleSplitDataFrameChan
+}
+
 func (c *Conn) handleHandshakeComplete(now monotime.Time) error {
 	defer close(c.handshakeCompleteChan)
 	// Once the handshake completes, we have derived 1-RTT keys.
@@ -1054,7 +1072,6 @@ func (c *Conn) handlePackets() (wasProcessed bool, _ error) {
 }
 
 func (c *Conn) handleOnePacket(rp receivedPacket) (wasProcessed bool, _ error) {
-	println("handleOnePacket")
 	c.sentPacketHandler.ReceivedBytes(rp.Size(), rp.rcvTime)
 
 	if wire.IsVersionNegotiationPacket(rp.data) {
@@ -1169,7 +1186,6 @@ func (c *Conn) handleOnePacket(rp receivedPacket) (wasProcessed bool, _ error) {
 }
 
 func (c *Conn) handleShortHeaderPacket(p receivedPacket, isCoalesced bool) (wasProcessed bool, _ error) {
-	println("handleShortHeaderPacket")
 	var wasQueued bool
 
 	defer func() {
@@ -1742,7 +1758,6 @@ func (c *Conn) handleUnpackedShortHeaderPacket(
 	c.firstAckElicitingPacketAfterIdleSentTime = 0
 	c.keepAlivePingSent = false
 
-	println("handleUnpackedShortHeaderPacket")
 	isAckEliciting, isNonProbing, pathChallenge, err := c.handleFrames(data, destConnID, protocol.Encryption1RTT, log, rcvTime)
 	if err != nil {
 		return false, nil, err
@@ -1772,14 +1787,8 @@ func (c *Conn) handleFrames(
 	var handleErr error
 	var skipHandling bool
 
-	println("HandleFrames")
-	frameType := data[0]
-	fmt.Printf("handleFrames sees frame: 0x%x\n", frameType)
-	fmt.Printf(strconv.Itoa(len(data)))
-
 	for len(data) > 0 {
 		frameType, l, err := c.frameParser.ParseType(data, encLevel)
-		println(frameType)
 
 		if err != nil {
 			println("ERR...")
@@ -1803,7 +1812,6 @@ func (c *Conn) handleFrames(
 		// We're inlining common cases, to avoid using interfaces
 		// Fast path: STREAM, DATAGRAM and ACK
 		if frameType.IsStreamFrameType() {
-			println("if")
 			streamFrame, l, err := c.frameParser.ParseStreamFrame(frameType, data, c.version)
 			if err != nil {
 				return false, false, nil, err
@@ -1820,7 +1828,6 @@ func (c *Conn) handleFrames(
 			wire.LogFrame(c.logger, streamFrame, false)
 			handleErr = c.streamsMap.HandleStreamFrame(streamFrame, rcvTime)
 		} else if frameType.IsAckFrameType() {
-			println("elif1")
 			ackFrame, l, err := c.frameParser.ParseAckFrame(frameType, data, encLevel, c.version)
 			if err != nil {
 				return false, false, nil, err
@@ -1836,7 +1843,6 @@ func (c *Conn) handleFrames(
 			wire.LogFrame(c.logger, ackFrame, false)
 			handleErr = c.handleAckFrame(ackFrame, encLevel, rcvTime)
 		} else if frameType.IsDatagramFrameType() {
-			println("elif2")
 			datagramFrame, l, err := c.frameParser.ParseDatagramFrame(frameType, data, c.version)
 			if err != nil {
 				return false, false, nil, err
@@ -1853,7 +1859,6 @@ func (c *Conn) handleFrames(
 			wire.LogFrame(c.logger, datagramFrame, false)
 			handleErr = c.handleDatagramFrame(datagramFrame)
 		} else {
-			println("else")
 			frame, l, err := c.frameParser.ParseLessCommonFrame(frameType, data, c.version)
 			if err != nil {
 				return false, false, nil, err
@@ -1874,7 +1879,6 @@ func (c *Conn) handleFrames(
 			handleErr = err
 		}
 
-		println("HandleAfterIf")
 		if handleErr != nil {
 			// if we're logging, we need to keep parsing (but not handling) all frames
 			skipHandling = true
@@ -1910,7 +1914,6 @@ func (c *Conn) handleFrame(
 	destConnID protocol.ConnectionID,
 	rcvTime monotime.Time,
 ) (pathChallenge *wire.PathChallengeFrame, _ error) {
-	println("handleFrameConnection")
 	var err error
 	wire.LogFrame(c.logger, f, false)
 	switch frame := f.(type) {
@@ -1947,10 +1950,16 @@ func (c *Conn) handleFrame(
 	case *wire.HandshakeDoneFrame:
 		err = c.handleHandshakeDoneFrame(rcvTime)
 	case *wire.TulCustomFrame:
-		println("TUL")
-		c.handleTulCustomFrameChan <- frame
+		select {
+		case c.handleTulCustomFrameChan <- frame:
+		default:
+		}
+	case *wire.SplitDataFrame:
+		select {
+		case c.handleSplitDataFrameChan <- frame:
+		default:
+		}
 	default:
-		println("UNKNOWNERRORHANDLE")
 		err = fmt.Errorf("unexpected frame type: %s", reflect.ValueOf(&frame).Elem().Type().Name())
 	}
 
@@ -1990,6 +1999,9 @@ func (c *Conn) handleConnectionCloseFrame(frame *wire.ConnectionCloseFrame) erro
 			ErrorMessage: frame.ReasonPhrase,
 		}
 	}
+
+	fmt.Println(frame.ReasonPhrase)
+
 	return &qerr.TransportError{
 		Remote:       true,
 		ErrorCode:    qerr.TransportErrorCode(frame.ErrorCode),
@@ -2430,6 +2442,10 @@ func (c *Conn) applyTransportParameters() {
 	)
 }
 
+func (c *Conn) GetMTUCurrentSize() protocol.ByteCount {
+	return c.mtuDiscoverer.CurrentSize()
+}
+
 func (c *Conn) triggerSending(now monotime.Time) error {
 	c.pacingDeadline = 0
 
@@ -2546,16 +2562,13 @@ func (c *Conn) sendPacketsWithoutGSO(now monotime.Time) error {
 		buf := getPacketBuffer()
 		ecn := c.sentPacketHandler.ECNMode(true)
 		if _, err := c.appendOneShortHeaderPacket(buf, c.maxPacketSize(), ecn, now); err != nil {
-			print("sendPacketsWithoutGSO")
 			if err == errNothingToPack {
 				buf.Release()
 				return nil
 			}
 			return err
 		}
-		println("PRE SEND")
 		c.sendQueue.Send(buf, 0, ecn)
-		println("POST SEND")
 
 		if c.sendQueue.WouldBlock() {
 			return nil
@@ -2569,7 +2582,6 @@ func (c *Conn) sendPacketsWithoutGSO(now monotime.Time) error {
 			return nil
 		}
 
-		println("POST SENDING")
 		// Prioritize receiving of packets over sending out more packets.
 		c.receivedPacketMx.Lock()
 		hasPackets := !c.receivedPackets.Empty()
@@ -2578,7 +2590,6 @@ func (c *Conn) sendPacketsWithoutGSO(now monotime.Time) error {
 			c.pacingDeadline = deadlineSendImmediately
 			return nil
 		}
-		println("FINAL SENDING")
 	}
 }
 
@@ -2725,10 +2736,8 @@ func (c *Conn) sendProbePacket(sendMode ackhandler.SendMode, now monotime.Time) 
 // If there was nothing to pack, the returned size is 0.
 func (c *Conn) appendOneShortHeaderPacket(buf *packetBuffer, maxSize protocol.ByteCount, ecn protocol.ECN, now monotime.Time) (protocol.ByteCount, error) {
 	startLen := buf.Len()
-	println("PACK ONE SHORT")
 	p, err := c.packer.AppendPacket(buf, maxSize, now, c.version)
 	if err != nil {
-		println("ERROR PACKING")
 		fmt.Printf("Error type: %T, msg: %v\n", err, err)
 		return 0, err
 	}
@@ -2881,12 +2890,16 @@ func (c *Conn) AcceptStream(ctx context.Context) (*Stream, error) {
 }
 
 func (c *Conn) SendMyFrame(bytesBlock []byte) {
-	fmt.Print("Hello")
 	c.sendMyFrameChan <- bytesBlock
-	//f := &wire.TulCustomFrame{Timestamp: value}
-	//c.framer.QueueControlFrame(f)
-	//println("QueueControlPassed")
-	//c.scheduleSending()
+}
+
+func (c *Conn) SendSplitDataFrame(fileOffset uint64, blockOffset uint64, blockSize uint64, serverBlockSize uint64) {
+	c.sendSplitDataFrameChan <- &wire.SplitDataFrame{
+		FileOffset:      fileOffset,
+		BlockOffset:     blockOffset,
+		BlockSize:       blockSize,
+		ServerBlockSize: serverBlockSize,
+	}
 }
 
 //func (c *Conn) onHandshakeComplete() {
