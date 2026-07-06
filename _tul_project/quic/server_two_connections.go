@@ -181,7 +181,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	log.Println("QUIC server listening on :443")
+	log.Println("QUIC server listening on address: ", ip_address)
 
 	for {
 		conn, err := listener.Accept(ctx)
@@ -219,4 +219,5 @@ func loadTLSConfig(certFile, keyFile string) (*tls.Config, error) {
 		Certificates: []tls.Certificate{cert},
 		NextProtos:   []string{"quic-echo-example"},
 	}, nil
+
 }
