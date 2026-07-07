@@ -200,6 +200,42 @@ func formatConnStats(conn *quic.Conn) string {
 	)
 }
 
+type LogEntry struct {
+	Timestamp  time.Time
+	ConnID     string
+	Offset     uint64
+	DataSize   int
+	Throughput float64
+}
+
+var logChan chan LogEntry
+
+func startLogger(filename string) *os.File {
+	f, err := os.Create(filename)
+	if err != nil {
+		log.Fatalf("Cannot create log file: %v", err)
+	}
+
+	logChan = make(chan LogEntry, 1000)
+	go func() {
+		for entry := range logChan {
+			ts := entry.Timestamp.Format("2006-01-02 15:04:05.000000")
+			line := fmt.Sprintf("%s | %s | offset=%d, dataSize=%d, throughput=%.2f MB/s\n",
+				ts, entry.ConnID, entry.Offset, entry.DataSize, entry.Throughput)
+			_, err := f.WriteString(line)
+			if err != nil {
+				log.Printf("Log write error: %v", err)
+			}
+		}
+		f.Close()
+	}()
+	return f
+}
+
+func stopLogger() {
+	close(logChan)
+}
+
 type Data struct {
 	ConnID   string
 	StreamID int64
@@ -267,7 +303,19 @@ func handleClientConn(ctx context.Context, conn *quic.Conn, connID string, out c
 					currentThroughput = float64(len(dataBuf)) / readLatency.Seconds() / 1024 / 1024 // kB/s
 				}
 
-				fmt.Println("[%s] Otrzymałem packet: offset=%d, dataSize=%d, throughput=%d", connID, fileOffset, len(dataBuf), currentThroughput)
+				fmt.Printf("[%s] Otrzymałem packet: offset=%d, dataSize=%d, throughput=%.2f MB/s\n", connID, fileOffset, len(dataBuf), currentThroughput)
+
+				// Log do pliku (async, non-blocking)
+				select {
+				case logChan <- LogEntry{
+					Timestamp:  time.Now(),
+					ConnID:     connID,
+					Offset:     fileOffset,
+					DataSize:   len(dataBuf),
+					Throughput: currentThroughput,
+				}:
+				default:
+				}
 
 				// Zapisz statystyki
 				stats.RecordRead(len(dataBuf), readLatency)
@@ -339,6 +387,10 @@ func main() {
 	//var wg sync.WaitGroup
 	done := make(chan struct{})
 
+	// Start async file logger
+	_ = startLogger("packet_log.txt")
+	defer stopLogger()
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 	connCh := make(chan ConnResult, 2)
@@ -347,13 +399,11 @@ func main() {
 	stats2 := NewStats()
 	var finished atomic.Bool
 
-	go runConnection(LOCAL_IP_ADDRESS, "conn1", &wg, connCh, ranges, stats1, &finished)
+	go runConnection(AZURE_IP_PUBLIC_ADDRESS, "conn1", &wg, connCh, ranges, stats1, &finished)
 	go runConnection(LOCAL_2_IP_ADDRESS, "conn2", &wg, connCh, ranges, stats2, &finished)
 
 	//go func() {
 	conn1, conn2 := <-connCh, <-connCh
-	abc := 0
-	cde := 1
 	currentProgress := uint64(0) // ⬅️ TUTAJ - zmienna przed pętlą
 	frameNumber := 0             // ⬅️ LICZNIK RAMEK
 
@@ -384,11 +434,10 @@ func main() {
 		throughput2 := stats2.GetCurrentThroughput()
 
 		var curr1, curr2 uint64
-		MTU := 1200
 
 		// Oblicz curr1 i curr2 na bazie stosunku throughput'u
 		totalThroughput := throughput1 + throughput2
-		totalBlockSize := uint64(50 * MTU)
+		totalBlockSize := uint64(BLOCK_SIZE_MULTIPLIER * MTU)
 
 		if totalThroughput > 0 {
 			// Stosunek przepustowości
@@ -409,8 +458,8 @@ func main() {
 		//if totalThroughput > 0 {
 		//curr1 = uint64(25 * MTU)
 		//curr2 = uint64(25 * MTU)
-		go conn1.Conn.SendSplitDataFrame(conn1.CurrentOffset.Load(), 0, uint64(50*MTU), curr1)
-		go conn2.Conn.SendSplitDataFrame(conn2.CurrentOffset.Load(), curr1, uint64(50*MTU), curr2)
+		go conn1.Conn.SendSplitDataFrame(conn1.CurrentOffset.Load(), 0, uint64(BLOCK_SIZE_MULTIPLIER*MTU), curr1)
+		go conn2.Conn.SendSplitDataFrame(conn2.CurrentOffset.Load(), curr1, uint64(BLOCK_SIZE_MULTIPLIER*MTU), curr2)
 		//}
 
 		fmt.Printf("KLIENT: wysłano SplitDataFrame #%d\n", frameNumber)
@@ -418,9 +467,7 @@ func main() {
 		// Inkrementuj currentProgress
 		currentProgress += totalBlockSize
 
-		abc = abc + 1
-		cde = cde + 1
-		// Wyświetl aktualne zakresy3
+		// Wyświetl aktualne zakresy
 		currentRanges := ranges.GetRanges()
 		fmt.Printf("Aktualne zakresy: %v\n", currentRanges)
 
