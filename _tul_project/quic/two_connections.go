@@ -9,6 +9,7 @@ import (
 	"github.com/quic-go/quic-go/qlog"
 	"io"
 	"log"
+	"main/quic/stats"
 	"main/quic/utils"
 	"os"
 	"os/signal"
@@ -388,8 +389,14 @@ func main() {
 	done := make(chan struct{})
 
 	// Start async file logger
-	_ = startLogger("packet_log.txt")
+	_ = startLogger("packet_log2.txt")
 	defer stopLogger()
+
+	splitDataLogger := stats.GetInstance()
+	splitDataLogger.Start("stats/splitdata_conn1.csv")
+	splitDataLogger.Start("stats/splitdata_conn2.csv")
+	defer splitDataLogger.Stop("stats/splitdata_conn1.csv")
+	defer splitDataLogger.Stop("stats/splitdata_conn2.csv")
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -399,8 +406,8 @@ func main() {
 	stats2 := NewStats()
 	var finished atomic.Bool
 
-	go runConnection(AZURE_IP_PUBLIC_ADDRESS, "conn1", &wg, connCh, ranges, stats1, &finished)
-	go runConnection(LOCAL_2_IP_ADDRESS, "conn2", &wg, connCh, ranges, stats2, &finished)
+	go runConnection(LOCAL_IP_ADDRESS, "conn1", &wg, connCh, ranges, stats1, &finished)
+	go runConnection(TUL_IP_PUBLIC_ADDRESS, "conn2", &wg, connCh, ranges, stats2, &finished)
 
 	//go func() {
 	conn1, conn2 := <-connCh, <-connCh
@@ -455,12 +462,30 @@ func main() {
 		fmt.Println("curr2 ", curr2)
 		fmt.Printf("KLIENT: wysyłam SplitDataFrame #%d - curr1=%d, curr2=%d\n", frameNumber, curr1, curr2)
 
-		//if totalThroughput > 0 {
-		//curr1 = uint64(25 * MTU)
-		//curr2 = uint64(25 * MTU)
-		go conn1.Conn.SendSplitDataFrame(conn1.CurrentOffset.Load(), 0, uint64(BLOCK_SIZE_MULTIPLIER*MTU), curr1)
-		go conn2.Conn.SendSplitDataFrame(conn2.CurrentOffset.Load(), curr1, uint64(BLOCK_SIZE_MULTIPLIER*MTU), curr2)
-		//}
+		fileOffset1 := conn1.CurrentOffset.Load()
+		fileOffset2 := conn2.CurrentOffset.Load()
+
+		splitDataLogger.Log("stats/splitdata_conn1.csv", stats.SplitDataFrameEntry{
+			Timestamp:        time.Now(),
+			Direction:        "sent",
+			FileOffset:       fileOffset1,
+			BlockOffset:      0,
+			BlockSize:        totalBlockSize,
+			ServerBlockSize:  curr1,
+			ServerFileOffset: fileOffset1,
+		})
+		splitDataLogger.Log("stats/splitdata_conn2.csv", stats.SplitDataFrameEntry{
+			Timestamp:        time.Now(),
+			Direction:        "sent",
+			FileOffset:       fileOffset2,
+			BlockOffset:      curr1,
+			BlockSize:        totalBlockSize,
+			ServerBlockSize:  curr2,
+			ServerFileOffset: fileOffset2,
+		})
+
+		go conn1.Conn.SendSplitDataFrame(fileOffset1, 0, totalBlockSize, curr1)
+		go conn2.Conn.SendSplitDataFrame(fileOffset2, curr1, totalBlockSize, curr2)
 
 		fmt.Printf("KLIENT: wysłano SplitDataFrame #%d\n", frameNumber)
 

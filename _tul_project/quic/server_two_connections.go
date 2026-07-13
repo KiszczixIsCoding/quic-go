@@ -9,8 +9,10 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/qlog"
 	"log"
+	"main/quic/stats"
 	"main/quic/utils"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,7 +27,7 @@ type SharedStateServer struct {
 	CurrentOffset   uint64 // current progress for this connection
 }
 
-func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedStateServer) {
+func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedStateServer, logFilename string) {
 	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
 
@@ -36,6 +38,10 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 
 	// currentOffset tracks how much this connection has sent so far
 	var currentOffset atomic.Uint64
+
+	splitDataLogger := stats.GetInstance()
+	splitDataLogger.Start(logFilename)
+	defer splitDataLogger.Stop(logFilename)
 
 	// Goroutine 1: wysyłanie
 	go func() {
@@ -132,6 +138,16 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 					return
 				}
 
+				splitDataLogger.Log(logFilename, stats.SplitDataFrameEntry{
+					Timestamp:        time.Now(),
+					Direction:        "received",
+					FileOffset:       frame.FileOffset,
+					BlockOffset:      frame.BlockOffset,
+					BlockSize:        frame.BlockSize,
+					ServerBlockSize:  frame.ServerBlockSize,
+					ServerFileOffset: currentOffset.Load(),
+				})
+
 				fmt.Printf("SERWER ODBIÓR #%d: fileOffset=%d, serverBlockSize=%d, blockOffset=%d, blockSize=%d\n",
 					receivedFrameNumber, frame.FileOffset, frame.ServerBlockSize, frame.BlockOffset, frame.BlockSize)
 				s.mu.Lock()
@@ -200,11 +216,11 @@ func main() {
 		}
 
 		go func(c *quic.Conn, s *SharedStateServer) {
-			// czekaj aż handshake się zakończy
 			<-c.HandshakeComplete()
-
-			//bytesBlock, _ := readFile(10)
-			handleServerConn(ctx, c, s)
+			safe := strings.ReplaceAll(ip_address, ":", "_")
+			ts := time.Now().Format("20060102_150405")
+			logFilename := fmt.Sprintf("stats/splitdata_server_%s_%s.csv", safe, ts)
+			handleServerConn(ctx, c, s, logFilename)
 		}(conn, state)
 	}
 }
