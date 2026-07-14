@@ -2601,7 +2601,6 @@ func (c *Conn) sendPacketsWithGSO(now monotime.Time) error {
 	for {
 		var dontSendMore bool
 		size, err := c.appendOneShortHeaderPacket(buf, maxSize, ecn, now)
-		println("sendPacketsWithGSO")
 		if err != nil {
 			if err != errNothingToPack {
 				return err
