@@ -73,9 +73,14 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 				fmt.Println("stop sending")
 				return
 			default:
+				fmt.Println("IS UPDATE")
+				fmt.Println("currentBlockSize", currentBlockSize)
+				fmt.Println("currentBlockOffset", currentBlockOffset)
 				if currentFileOffset > s.FileOffset {
-					currentBlockSize = s.BlockSize
+					currentBlockSize = s.ServerBlockSize
 					currentBlockOffset = s.BlockOffset
+					//fmt.Println("currentBlockSize", currentBlockSize)
+					//fmt.Println("currentBlockOffset", currentBlockOffset)
 				}
 
 				currentFileOffset += currentBlockOffset
