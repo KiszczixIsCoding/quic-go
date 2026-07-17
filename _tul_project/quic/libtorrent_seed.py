@@ -15,6 +15,7 @@ def create_session(listen_interface):
         "enable_outgoing_utp": True,
         "enable_incoming_utp": True,
         "connections_limit": 100,
+        "upload_rate_limit": 2 * 1024 * 1024,  # 2 MB/s
     })
     print("Listening on port:", ses.listen_port())
     return ses
@@ -47,7 +48,7 @@ def monitor(handle):
 if __name__ == "__main__":
     torrent = sys.argv[1]
     source = os.path.abspath(sys.argv[2])
-    listen_interface = sys.argv[3] if len(sys.argv) > 3 else "0.0.0.0:1234"
+    listen_interface = sys.argv[3] if len(sys.argv) > 3 else "0.0.0.0:6881"
 
     ti = lt.torrent_info(torrent)
     print(f"Torrent name: {ti.name()}")
