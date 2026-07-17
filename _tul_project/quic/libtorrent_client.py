@@ -56,7 +56,7 @@ def format_size(bytes_val):
     return f"{bytes_val} B"
 
 
-def monitor(handle, session):
+def monitor(handle, session, seed_addr=None):
     torrent_info = handle.torrent_file()
     piece_peers = {}    # piece_index -> set of peer IPs
     pending_pieces = set()  # pieces that got piece_finished but not all blocks yet
@@ -97,6 +97,9 @@ def monitor(handle, session):
                 print(f"\n[{ts}] [Piece {piece_idx:3d}] size={format_size(piece_size)} peer={peer}")
 
         status = handle.status()
+        if status.num_peers == 0 and seed_addr:
+            handle.connect_peer(seed_addr)
+
         print(
             f"\r"
             f"Progress: {status.progress * 100:.2f}% "
@@ -155,9 +158,9 @@ if __name__ == "__main__":
     handle.resume()  # Start pobierania
 
     # seed_addr = ("20.107.170.9", 4443)
-    seed_addr = ("10.101.5.6", 5201)
+    seed_addr = ("212.51.220.6", 5201)
 
     print(f"Connecting to seed: {seed_addr[0]}:{seed_addr[1]}", flush=True)
     handle.connect_peer(seed_addr)
 
-    monitor(handle, session)
+    monitor(handle, session, seed_addr)

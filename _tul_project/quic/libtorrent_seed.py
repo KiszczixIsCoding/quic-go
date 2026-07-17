@@ -4,15 +4,14 @@ import sys
 import os
 
 
-def create_session():
+def create_session(listen_interface):
     ses = lt.session()
     ses.apply_settings({
         "enable_lsd": False,
         "enable_dht": False,
         "enable_upnp": False,
         "enable_natpmp": False,
-        # "listen_interfaces": "10.0.0.4:4443",
-        "listen_interfaces": "0.0.0.0:5201",
+        "listen_interfaces": listen_interface,
         "enable_outgoing_utp": True,
         "enable_incoming_utp": True,
         "connections_limit": 100,
@@ -48,6 +47,7 @@ def monitor(handle):
 if __name__ == "__main__":
     torrent = sys.argv[1]
     source = os.path.abspath(sys.argv[2])
+    listen_interface = sys.argv[3] if len(sys.argv) > 3 else "0.0.0.0:1234"
 
     ti = lt.torrent_info(torrent)
     print(f"Torrent name: {ti.name()}")
@@ -64,7 +64,7 @@ if __name__ == "__main__":
     elif os.path.isfile(source):
         print(f"  Is file: {source}")
 
-    session = create_session()
+    session = create_session(listen_interface)
     handle = add_torrent(session, torrent, source)
     print("Verifying storage...", flush=True)
     handle.resume()
