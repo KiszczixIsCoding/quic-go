@@ -13,8 +13,8 @@ def create_session():
         "enable_natpmp": False,
         # "listen_interfaces": "10.0.0.4:4443",
         "listen_interfaces": "0.0.0.0:5201",
-        "enable_outgoing_utp": False,
-        "enable_incoming_utp": False,
+        "enable_outgoing_utp": True,
+        "enable_incoming_utp": True,
         "connections_limit": 100,
     })
     print("Listening on port:", ses.listen_port())

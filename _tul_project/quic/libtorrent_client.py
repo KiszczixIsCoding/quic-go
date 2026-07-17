@@ -17,8 +17,8 @@ def create_client():
     "listen_interfaces": "0.0.0.0:52864",
     "alert_queue_size": 100000,
     # "download_rate_limit": 10,  # limit 100 KB/s żeby wymusić użycie obu peerów
-    "enable_outgoing_utp": False,
-    "enable_incoming_utp": False,
+    "enable_outgoing_utp": True,
+    "enable_incoming_utp": True,
 })
     # porty nasłuchujące dla peerów
     # ses.listen_on(52862, 52864)
@@ -155,7 +155,7 @@ if __name__ == "__main__":
     handle.resume()  # Start pobierania
 
     # seed_addr = ("20.107.170.9", 4443)
-    seed_addr = ("212.51.220.6", 5201)
+    seed_addr = ("10.101.5.6", 5201)
 
     print(f"Connecting to seed: {seed_addr[0]}:{seed_addr[1]}", flush=True)
     handle.connect_peer(seed_addr)
