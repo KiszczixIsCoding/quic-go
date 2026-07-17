@@ -16,7 +16,9 @@ def create_client():
     "enable_natpmp": False,
     "listen_interfaces": "0.0.0.0:52864",
     "alert_queue_size": 100000,
-    "download_rate_limit": 10,  # limit 100 KB/s żeby wymusić użycie obu peerów
+    # "download_rate_limit": 10,  # limit 100 KB/s żeby wymusić użycie obu peerów
+    "enable_outgoing_utp": False,
+    "enable_incoming_utp": False,
 })
     # porty nasłuchujące dla peerów
     # ses.listen_on(52862, 52864)
@@ -152,20 +154,10 @@ if __name__ == "__main__":
     print("Connecting to peers...", flush=True)
     handle.resume()  # Start pobierania
 
-    # Retry connect_peer co 3 sekundy przez 60 sekund
-    seed_addr = ("20.107.170.9", 4443)
-    print(f"Trying to connect to seed: {seed_addr[0]}:{seed_addr[1]}", flush=True)
-    for attempt in range(20):
-        handle.connect_peer(seed_addr)
-        print(f"connect_peer attempt {attempt+1}/20", flush=True)
-        time.sleep(3)
-        status = handle.status()
-        if status.num_peers > 0:
-            print(f"Connected! Peers: {status.num_peers}", flush=True)
-            break
-        peers = handle.get_peer_info()
-        if peers:
-            for p in peers:
-                print(f"  Peer: {p.ip} state={p.state} up={p.up_speed} down={p.down_speed}", flush=True)
+    # seed_addr = ("20.107.170.9", 4443)
+    seed_addr = ("212.51.220.6", 5201)
+
+    print(f"Connecting to seed: {seed_addr[0]}:{seed_addr[1]}", flush=True)
+    handle.connect_peer(seed_addr)
 
     monitor(handle, session)

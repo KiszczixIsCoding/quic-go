@@ -11,8 +11,10 @@ def create_session():
         "enable_dht": False,
         "enable_upnp": False,
         "enable_natpmp": False,
-        "listen_interfaces": "0.0.0.0:4443",
-        "outgoing_connections_limit": 0,
+        "listen_interfaces": "10.0.0.4:4443",
+        "enable_outgoing_utp": False,
+        "enable_incoming_utp": False,
+        "connections_limit": 100,
     })
     print("Listening on port:", ses.listen_port())
     return ses
