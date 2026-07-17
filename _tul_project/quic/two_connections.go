@@ -9,10 +9,11 @@ import (
 	"github.com/quic-go/quic-go/qlog"
 	"io"
 	"log"
-	"main/quic/stats"
+	ststats "main/quic/stats"
 	"main/quic/utils"
 	"os"
 	"os/signal"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,6 +35,9 @@ type Stats struct {
 	minLatency        time.Duration
 	maxLatency        time.Duration
 	latencySum        time.Duration
+	// Window-based throughput
+	windowBytes int64
+	windowStart time.Time
 }
 
 func NewStats() *Stats {
@@ -42,24 +46,20 @@ func NewStats() *Stats {
 	}
 }
 
+func (st *Stats) StartWindow() {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.windowBytes = 0
+	st.windowStart = time.Now()
+}
+
 func (st *Stats) RecordRead(bytesRead int, latency time.Duration) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
 	st.totalBytesRead += int64(bytesRead)
 	st.readCount++
-
-	// Throughput z tego read'a
-	if latency.Seconds() > 0 {
-		throughput := float64(bytesRead) / latency.Seconds() / 1024 / 1024 // MB/s
-		st.currentThroughput = throughput
-		if st.minThroughput == 0 || throughput < st.minThroughput {
-			st.minThroughput = throughput
-		}
-		if throughput > st.maxThroughput {
-			st.maxThroughput = throughput
-		}
-	}
+	st.windowBytes += int64(bytesRead)
 
 	// Latency
 	if st.minLatency == 0 || latency < st.minLatency {
@@ -74,7 +74,25 @@ func (st *Stats) RecordRead(bytesRead int, latency time.Duration) {
 func (st *Stats) GetCurrentThroughput() float64 {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	return st.currentThroughput
+	elapsed := time.Since(st.windowStart).Seconds()
+	if elapsed <= 0 {
+		return 0
+	}
+	throughput := float64(st.windowBytes) / elapsed / 1024 / 1024 // MB/s
+	if st.minThroughput == 0 || throughput < st.minThroughput {
+		st.minThroughput = throughput
+	}
+	if throughput > st.maxThroughput {
+		st.maxThroughput = throughput
+	}
+	st.currentThroughput = throughput
+	return throughput
+}
+
+func (st *Stats) GetTotalBytes() int64 {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	return st.totalBytesRead
 }
 
 func (st *Stats) PrintStats(connID string, currentThroughput float64, currentLatency time.Duration) {
@@ -128,6 +146,48 @@ func (rr *ReceivedRanges) GetCurrentOffset() int64 {
 	rr.mu.Lock()
 	defer rr.mu.Unlock()
 	return rr.currentOffset
+}
+
+// CountGaps zwraca liczbę przerw w zakresie [0, currentOffset)
+func (rr *ReceivedRanges) CountGaps() int {
+	rr.mu.Lock()
+	defer rr.mu.Unlock()
+
+	if len(rr.ranges) == 0 {
+		return 0
+	}
+
+	// Kopia i sortowanie po start
+	sorted := make([]Range, len(rr.ranges))
+	copy(sorted, rr.ranges)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].Start < sorted[j].Start
+	})
+
+	// Scalanie nakładających się zakresów
+	merged := []Range{sorted[0]}
+	for i := 1; i < len(sorted); i++ {
+		last := &merged[len(merged)-1]
+		if sorted[i].Start <= last.End {
+			if sorted[i].End > last.End {
+				last.End = sorted[i].End
+			}
+		} else {
+			merged = append(merged, sorted[i])
+		}
+	}
+
+	// Liczenie przerw
+	gaps := 0
+	if merged[0].Start > 0 {
+		gaps++
+	}
+	for i := 1; i < len(merged); i++ {
+		if merged[i].Start > merged[i-1].End {
+			gaps++
+		}
+	}
+	return gaps
 }
 
 // IsRangeCovered sprawdza czy dany zakres jest już pokryty
@@ -251,7 +311,7 @@ type SharedStateClient struct {
 	ServerBlockSize uint64
 }
 
-func handleClientConn(ctx context.Context, conn *quic.Conn, connID string, out chan<- Data, ranges *ReceivedRanges, stats *Stats, finished *atomic.Bool, currentOffset *atomic.Uint64) {
+func handleClientConn(ctx context.Context, conn *quic.Conn, connID string, out chan<- Data, ranges *ReceivedRanges, stats *Stats, finished *atomic.Bool, currentOffset *atomic.Uint64, rangeLogger *ststats.ReceivedRangeLogger, rangeFile string) {
 	defer close(out)
 	fmt.Println("Handle connection: ", connID)
 	fileSize := utils.GetFileSize("../movie.mp4")
@@ -306,6 +366,15 @@ func handleClientConn(ctx context.Context, conn *quic.Conn, connID string, out c
 
 				fmt.Printf("[%s] Otrzymałem packet: offset=%d, dataSize=%d, throughput=%.2f MB/s\n", connID, fileOffset, len(dataBuf), currentThroughput)
 
+				// Log do stats/received_packets.csv
+				ststats.GetReceivedPacketLogger().Log("stats/received_packets.csv", ststats.ReceivedPacketEntry{
+					Timestamp:  time.Now(),
+					ConnID:     connID,
+					DataSize:   len(dataBuf),
+					Offset:     fileOffset,
+					Throughput: currentThroughput,
+				})
+
 				// Log do pliku (async, non-blocking)
 				select {
 				case logChan <- LogEntry{
@@ -327,6 +396,14 @@ func handleClientConn(ctx context.Context, conn *quic.Conn, connID string, out c
 				rangeEnd := int64(fileOffset) + int64(dataLength)
 				ranges.AddRange(rangeStart, rangeEnd)
 
+				// Log zakres do pliku
+				rangeLogger.Log(rangeFile, ststats.ReceivedRangeEntry{
+					Timestamp: time.Now(),
+					ConnID:    connID,
+					Start:     rangeStart,
+					End:       rangeEnd,
+				})
+
 				// Zaktualizuj currentOffset dla tego połączenia
 				currentOffset.Add(dataLength)
 
@@ -342,7 +419,7 @@ func handleClientConn(ctx context.Context, conn *quic.Conn, connID string, out c
 	}
 }
 
-func runConnection(addr string, connID string, wg *sync.WaitGroup, out chan<- ConnResult, ranges *ReceivedRanges, stats *Stats, finished *atomic.Bool) {
+func runConnection(addr string, connID string, wg *sync.WaitGroup, out chan<- ConnResult, ranges *ReceivedRanges, stats *Stats, finished *atomic.Bool, rangeLogger *ststats.ReceivedRangeLogger, rangeFile string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -370,7 +447,7 @@ func runConnection(addr string, connID string, wg *sync.WaitGroup, out chan<- Co
 	}
 	channel := make(chan Data, 100)
 
-	go handleClientConn(ctx, connAzure, connID, channel, ranges, stats, finished, currentOffset)
+	go handleClientConn(ctx, connAzure, connID, channel, ranges, stats, finished, currentOffset, rangeLogger, rangeFile)
 
 	for data := range channel {
 		fmt.Printf("[conn2][%d]: %s\n", data.StreamID, string(data.Payload))
@@ -384,6 +461,41 @@ type ConnResult struct {
 	CurrentOffset *atomic.Uint64
 }
 
+type ThroughputSample struct {
+	Timestamp       time.Time
+	Conn1Throughput float64
+	Conn2Throughput float64
+	Conn1TotalBytes int64
+	Conn2TotalBytes int64
+}
+
+var throughputLogChan chan ThroughputSample
+
+func startThroughputLogger(filename string) {
+	throughputLogChan = make(chan ThroughputSample, 1000)
+	f, err := os.Create(filename)
+	if err != nil {
+		log.Fatalf("Cannot create throughput log file: %v", err)
+	}
+
+	f.WriteString("timestamp,conn1_throughput_mbps,conn2_throughput_mbps,conn1_total_bytes,conn2_total_bytes\n")
+	f.Sync()
+
+	go func() {
+		for entry := range throughputLogChan {
+			ts := entry.Timestamp.Format("2006-01-02T15:04:05.000000")
+			line := fmt.Sprintf("%s,%.2f,%.2f,%d,%d\n",
+				ts, entry.Conn1Throughput, entry.Conn2Throughput, entry.Conn1TotalBytes, entry.Conn2TotalBytes)
+			_, _ = f.WriteString(line)
+		}
+		f.Close()
+	}()
+}
+
+func stopThroughputLogger() {
+	close(throughputLogChan)
+}
+
 func main() {
 	//var wg sync.WaitGroup
 	done := make(chan struct{})
@@ -392,11 +504,29 @@ func main() {
 	_ = startLogger("packet_log2.txt")
 	defer stopLogger()
 
-	splitDataLogger := stats.GetInstance()
+	// Start periodic throughput logger
+	startThroughputLogger("stats/throughput_periodic.csv")
+	defer stopThroughputLogger()
+
+	splitDataLogger := ststats.GetInstance()
 	splitDataLogger.Start("stats/splitdata_conn1.csv")
 	splitDataLogger.Start("stats/splitdata_conn2.csv")
 	defer splitDataLogger.Stop("stats/splitdata_conn1.csv")
 	defer splitDataLogger.Stop("stats/splitdata_conn2.csv")
+
+	receivedLogger := ststats.GetReceivedPacketLogger()
+	receivedLogger.Start("stats/received_packets.csv")
+	defer receivedLogger.Stop("stats/received_packets.csv")
+
+	rangeLogger := ststats.GetReceivedRangeLogger()
+	rangeLogger.Start("stats/received_ranges_conn1.csv")
+	rangeLogger.Start("stats/received_ranges_conn2.csv")
+	defer rangeLogger.Stop("stats/received_ranges_conn1.csv")
+	defer rangeLogger.Stop("stats/received_ranges_conn2.csv")
+
+	gapLogger := ststats.GetGapLogger()
+	gapLogger.Start("stats/gaps.csv")
+	defer gapLogger.Stop("stats/gaps.csv")
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -406,11 +536,70 @@ func main() {
 	stats2 := NewStats()
 	var finished atomic.Bool
 
-	go runConnection(LOCAL_IP_ADDRESS, "conn1", &wg, connCh, ranges, stats1, &finished)
-	go runConnection(TUL_IP_PUBLIC_ADDRESS, "conn2", &wg, connCh, ranges, stats2, &finished)
+	go runConnection(AZURE_IP_PUBLIC_ADDRESS, "conn1", &wg, connCh, ranges, stats1, &finished, rangeLogger, "stats/received_ranges_conn1.csv")
+	go runConnection(TUL_IP_PUBLIC_ADDRESS, "conn2", &wg, connCh, ranges, stats2, &finished, rangeLogger, "stats/received_ranges_conn2.csv")
 
-	//go func() {
 	conn1, conn2 := <-connCh, <-connCh
+
+	// Periodic throughput sampler — logs every 500ms
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		var prevBytes1, prevBytes2 int64
+		var prevTime time.Time
+		prevTime = time.Now()
+
+		for {
+			if finished.Load() {
+				// Log final sample
+				now := time.Now()
+				elapsed := now.Sub(prevTime).Seconds()
+				if elapsed > 0 {
+					curr1Bytes := stats1.GetTotalBytes()
+					curr2Bytes := stats2.GetTotalBytes()
+					tp1 := float64(curr1Bytes-prevBytes1) / elapsed / 1024 / 1024
+					tp2 := float64(curr2Bytes-prevBytes2) / elapsed / 1024 / 1024
+					select {
+					case throughputLogChan <- ThroughputSample{
+						Timestamp:       now,
+						Conn1Throughput: tp1,
+						Conn2Throughput: tp2,
+						Conn1TotalBytes: curr1Bytes,
+						Conn2TotalBytes: curr2Bytes,
+					}:
+					default:
+					}
+				}
+				return
+			}
+
+			<-ticker.C
+			now := time.Now()
+			elapsed := now.Sub(prevTime).Seconds()
+			if elapsed <= 0 {
+				continue
+			}
+			curr1Bytes := stats1.GetTotalBytes()
+			curr2Bytes := stats2.GetTotalBytes()
+			tp1 := float64(curr1Bytes-prevBytes1) / elapsed / 1024 / 1024
+			tp2 := float64(curr2Bytes-prevBytes2) / elapsed / 1024 / 1024
+			prevBytes1 = curr1Bytes
+			prevBytes2 = curr2Bytes
+			prevTime = now
+
+			select {
+			case throughputLogChan <- ThroughputSample{
+				Timestamp:       now,
+				Conn1Throughput: tp1,
+				Conn2Throughput: tp2,
+				Conn1TotalBytes: curr1Bytes,
+				Conn2TotalBytes: curr2Bytes,
+			}:
+			default:
+			}
+		}
+	}()
+
 	currentProgress := uint64(0) // ⬅️ TUTAJ - zmienna przed pętlą
 	frameNumber := 0             // ⬅️ LICZNIK RAMEK
 
@@ -421,6 +610,8 @@ func main() {
 		}
 
 		frameNumber++ // ⬅️ INKREMENTUJ NA STARCIE ITERACJI
+		stats1.StartWindow()
+		stats2.StartWindow()
 		rtt1 := conn1.Conn.ConnectionStats().SmoothedRTT
 		rtt2 := conn2.Conn.ConnectionStats().SmoothedRTT
 
@@ -437,6 +628,15 @@ func main() {
 
 		fmt.Println("Min sRTT: ", minSRTT)
 		time.Sleep(minSRTT)
+
+		gaps := ranges.CountGaps()
+		gapLogger.Log("stats/gaps.csv", ststats.GapEntry{
+			Timestamp:     time.Now(),
+			CurrentOffset: ranges.GetCurrentOffset(),
+			Gaps:          gaps,
+		})
+		fmt.Printf("GAPS: offset=%d, gaps=%d\n", ranges.GetCurrentOffset(), gaps)
+
 		throughput1 := stats1.GetCurrentThroughput()
 		throughput2 := stats2.GetCurrentThroughput()
 
@@ -446,14 +646,15 @@ func main() {
 		totalThroughput := throughput1 + throughput2
 		totalBlockSize := uint64(BLOCK_SIZE_MULTIPLIER * MTU)
 
-		if totalThroughput > 0 {
-			// Stosunek przepustowości
-			curr1 = uint64((throughput1 / totalThroughput) * float64(totalBlockSize))
-			curr2 = totalBlockSize - curr1
-		} else {
-			// Jeśli brak danych, równy podział
+		if totalThroughput == 0 {
 			curr1 = totalBlockSize / 2
 			curr2 = totalBlockSize / 2
+		} else {
+			w1 := 1.0 / max(throughput1, 0.01) // floor 0.01 MB/s
+			w2 := 1.0 / max(throughput2, 0.01)
+			total := w1 + w2
+			curr1 = uint64(w1 / total * float64(totalBlockSize))
+			curr2 = totalBlockSize - curr1
 		}
 
 		fmt.Println("throughput 1 ", throughput1)
@@ -465,7 +666,7 @@ func main() {
 		fileOffset1 := conn1.CurrentOffset.Load()
 		fileOffset2 := conn2.CurrentOffset.Load()
 
-		splitDataLogger.Log("stats/splitdata_conn1.csv", stats.SplitDataFrameEntry{
+		splitDataLogger.Log("stats/splitdata_conn1.csv", ststats.SplitDataFrameEntry{
 			Timestamp:        time.Now(),
 			Direction:        "sent",
 			FileOffset:       fileOffset1,
@@ -474,7 +675,7 @@ func main() {
 			ServerBlockSize:  curr1,
 			ServerFileOffset: fileOffset1,
 		})
-		splitDataLogger.Log("stats/splitdata_conn2.csv", stats.SplitDataFrameEntry{
+		splitDataLogger.Log("stats/splitdata_conn2.csv", ststats.SplitDataFrameEntry{
 			Timestamp:        time.Now(),
 			Direction:        "sent",
 			FileOffset:       fileOffset2,

@@ -4,6 +4,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -50,6 +51,9 @@ func (l *Logger) Start(filename string) error {
 		return nil
 	}
 
+	if err := os.MkdirAll(filepath.Dir(filename), 0755); err != nil {
+		return err
+	}
 	f, err := os.Create(filename)
 	if err != nil {
 		return err
@@ -95,10 +99,7 @@ func (l *Logger) Log(filename string, entry SplitDataFrameEntry) {
 		return
 	}
 
-	select {
-	case h.ch <- entry:
-	default:
-	}
+	h.ch <- entry
 }
 
 func (l *Logger) Stop(filename string) {
