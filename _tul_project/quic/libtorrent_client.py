@@ -63,6 +63,14 @@ def monitor(handle, session):
         alerts = session.pop_alerts()
         for alert in alerts:
             name = type(alert).__name__
+            # Log peer connection/disconnect alerts
+            if name in ('peer_connected_alert', 'peer_disconnected_alert', 'tcp_error_alert', 'peer_error_alert', 'session_error_alert'):
+                err = getattr(alert, 'error', None)
+                err_msg = str(err) if err else "none"
+                msg_fn = getattr(alert, 'message', None)
+                msg = msg_fn() if callable(msg_fn) else str(msg_fn)
+                ip = f"{alert.ip[0]}:{alert.ip[1]}" if hasattr(alert, 'ip') else "N/A"
+                print(f"\n[ALERT] {name}: ip={ip} error={err_msg} msg={msg}", flush=True)
             if name == 'block_finished_alert':
                 peer_ip = f"{alert.ip[0]}:{alert.ip[1]}"
                 if alert.piece_index not in piece_peers:
@@ -142,8 +150,22 @@ if __name__ == "__main__":
         )
 
     print("Connecting to peers...", flush=True)
-    handle.connect_peer(("127.0.0.1", 52865))
-    handle.connect_peer(("127.0.0.1", 52863))
-
     handle.resume()  # Start pobierania
+
+    # Retry connect_peer co 3 sekundy przez 60 sekund
+    seed_addr = ("20.107.170.9", 4443)
+    print(f"Trying to connect to seed: {seed_addr[0]}:{seed_addr[1]}", flush=True)
+    for attempt in range(20):
+        handle.connect_peer(seed_addr)
+        print(f"connect_peer attempt {attempt+1}/20", flush=True)
+        time.sleep(3)
+        status = handle.status()
+        if status.num_peers > 0:
+            print(f"Connected! Peers: {status.num_peers}", flush=True)
+            break
+        peers = handle.get_peer_info()
+        if peers:
+            for p in peers:
+                print(f"  Peer: {p.ip} state={p.state} up={p.up_speed} down={p.down_speed}", flush=True)
+
     monitor(handle, session)
