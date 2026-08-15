@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"fmt"
-	_ "fmt"
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/qlog"
 	"log"
@@ -27,26 +26,39 @@ type SharedStateServer struct {
 	CurrentOffset   uint64 // current progress for this connection
 }
 
+type FillRequest struct {
+	Offset uint64
+	Size   uint64
+}
+
+type streamPacket struct {
+	Offset uint64
+	Data   []byte
+}
+
 func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedStateServer, logFilename string) {
 	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
 
 	var wg sync.WaitGroup
-	wg.Add(2)
 
 	startSending := make(chan struct{})
+	fillChan := make(chan FillRequest, 4096)
+	sendQueue := make(chan streamPacket, 2048)
 
-	// currentOffset tracks how much this connection has sent so far
 	var currentOffset atomic.Uint64
+	var sentPacketNumber atomic.Int64
 
 	splitDataLogger := stats.GetInstance()
 	splitDataLogger.Start(logFilename)
 	defer splitDataLogger.Stop(logFilename)
 
-	// Goroutine 1: wysyłanie
+	fileSize := utils.GetFileSize("../movie.mp4")
+
+	// Goroutine 1: Single writer
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
-
 		str, err := conn.OpenUniStream()
 		if err != nil {
 			log.Println(err)
@@ -54,6 +66,24 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 		}
 		defer str.Close()
 
+		for pkt := range sendQueue {
+			_, err := str.Write(pkt.Data)
+			if err != nil {
+				log.Printf("WRITE ERR: %T %#v\n", err, err)
+				return
+			}
+			sent := sentPacketNumber.Add(1)
+			fmt.Printf("SERWER WRITER #%d: offset=%d, size=%d\n",
+				sent, pkt.Offset, len(pkt.Data)-16)
+		}
+	}()
+
+	readerPoolDone := make(chan struct{})
+
+	// Goroutine 2: Normal sending
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
 		<-startSending
 
 		s.mu.RLock()
@@ -63,83 +93,145 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 		currentBlockOffset := s.BlockOffset
 		s.mu.RUnlock()
 
-		sentPacketNumber := 0 // ⬅️ LICZNIK WYSŁANYCH PAKIETÓW
 		startTime := time.Now()
-		fmt.Println("WYSYŁANIE :)")
-		for currentFileOffset < utils.GetFileSize("../movie.mp4") {
-			sentPacketNumber++ // ⬅️ INKREMENTUJ
+		for currentFileOffset < fileSize {
 			select {
 			case <-ctx.Done():
-				fmt.Println("stop sending")
 				return
 			default:
-				fmt.Println("IS UPDATE")
-				fmt.Println("currentBlockSize", currentBlockSize)
-				fmt.Println("currentBlockOffset", currentBlockOffset)
-				if currentFileOffset > s.FileOffset {
-					currentBlockSize = s.ServerBlockSize
-					currentBlockOffset = s.BlockOffset
-					//fmt.Println("currentBlockSize", currentBlockSize)
-					//fmt.Println("currentBlockOffset", currentBlockOffset)
-				}
+			}
 
-				currentFileOffset += currentBlockOffset
+			if currentFileOffset > s.FileOffset {
+				currentBlockSize = s.ServerBlockSize
+				currentBlockOffset = s.BlockOffset
+			}
 
-				// Odczytaj okreslona liczbę bajtów
-				fmt.Println("Status of sending: ", currentFileOffset, " / ", utils.GetFileSize("../movie.mp4"))
-				data, err := utils.ReadChunk("../movie.mp4", int64(currentFileOffset), int(currentBlockSize))
-				if err != nil {
-					log.Printf("READ ERR: %T %#v\n", err, err)
-					return
-				}
-				//////////////////////////////////////////////////////////////////////////
+			currentFileOffset += currentBlockOffset
 
-				// Przygotuj combined packet: [8 bytes offset] + [8 bytes length] + [data]
-				combined := make([]byte, 8+8+len(data))
-				binary.BigEndian.PutUint64(combined[0:8], currentFileOffset)
-				binary.BigEndian.PutUint64(combined[8:16], uint64(len(data)))
-				copy(combined[16:], data)
-				//////////////////////////////////////////////////////////////////////////
+			if currentFileOffset >= fileSize {
+				currentFileOffset -= currentBlockOffset
+			}
 
-				// Wysłij offset + length + dane w jednym Write'e
-				n, err := str.Write(combined)
-				fmt.Printf("SERWER WYSYŁA #%d: offset=%d, ActualBlockSize=%d, bytes sent=%d, currentOffset=%d\n",
-					sentPacketNumber, int64(currentFileOffset), len(data), n, currentOffset.Load())
+			actualBlockSize := currentBlockSize
+			if currentFileOffset+actualBlockSize > fileSize {
+				actualBlockSize = fileSize - currentFileOffset
+			}
 
-				if err != nil {
-					log.Printf("WRITE ERR: %T %#v\n", err, err)
-					return
-				}
-				//////////////////////////////////////////////////////////////////////////
+			data, err := utils.ReadChunk("../movie.mp4", int64(currentFileOffset), int(actualBlockSize))
+			if err != nil {
+				log.Printf("READ ERR: %T %#v\n", err, err)
+				return
+			}
 
-				// Update currentOffset after sending
-				currentOffset.Add(currentBlockSize)
+			combined := make([]byte, 8+8+len(data))
+			binary.BigEndian.PutUint64(combined[0:8], currentFileOffset)
+			binary.BigEndian.PutUint64(combined[8:16], uint64(len(data)))
+			copy(combined[16:], data)
 
-				currentFileOffset += currentSkip - currentBlockOffset
+			select {
+			case sendQueue <- streamPacket{Offset: currentFileOffset, Data: combined}:
+			case <-ctx.Done():
+				return
+			}
+
+			currentOffset.Add(currentBlockSize)
+			currentFileOffset += currentSkip - currentBlockSize
+
+			if actualBlockSize != currentBlockSize {
+				break
 			}
 		}
 
 		elapsed := time.Since(startTime)
-		fmt.Printf("SERWER: plik wysłany w całości (packet #%d), czas=%v, zatrzymuję odbiór SplitDataFrame\n", sentPacketNumber, elapsed)
-		cancel()
+		fmt.Printf("SERWER: normalne wysyłanie zakończone, czas=%v\n", elapsed)
+		close(readerPoolDone)
+
+		// Post-normal gap-fill reader
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case fill := <-fillChan:
+				if fill.Offset >= fileSize {
+					continue
+				}
+				actualFillSize := fill.Size
+				if fill.Offset+actualFillSize > fileSize {
+					actualFillSize = fileSize - fill.Offset
+				}
+				data, err := utils.ReadChunk("../movie.mp4", int64(fill.Offset), int(actualFillSize))
+				if err != nil {
+					log.Printf("GAP-FILL READ ERR: %T %#v\n", err, err)
+					continue
+				}
+				combined := make([]byte, 8+8+len(data))
+				binary.BigEndian.PutUint64(combined[0:8], fill.Offset)
+				binary.BigEndian.PutUint64(combined[8:16], uint64(len(data)))
+				copy(combined[16:], data)
+				select {
+				case sendQueue <- streamPacket{Offset: fill.Offset, Data: combined}:
+				case <-ctx.Done():
+					return
+				}
+				currentOffset.Add(actualFillSize)
+			}
+		}
 	}()
 
-	// Goroutine 2: odbiór
+	// Goroutines 3-6: Reader pool (4 goroutines) for gap-fill
+	const readerPoolSize = 4
+	for i := 0; i < readerPoolSize; i++ {
+		wg.Add(1)
+		go func(rid int) {
+			defer wg.Done()
+			<-startSending
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-readerPoolDone:
+					return
+				case fill := <-fillChan:
+					if fill.Offset >= fileSize {
+						continue
+					}
+					actualFillSize := fill.Size
+					if fill.Offset+actualFillSize > fileSize {
+						actualFillSize = fileSize - fill.Offset
+					}
+					data, err := utils.ReadChunk("../movie.mp4", int64(fill.Offset), int(actualFillSize))
+					if err != nil {
+						log.Printf("GAP-FILL READER #%d READ ERR: %T %#v\n", rid, err, err)
+						continue
+					}
+					combined := make([]byte, 8+8+len(data))
+					binary.BigEndian.PutUint64(combined[0:8], fill.Offset)
+					binary.BigEndian.PutUint64(combined[8:16], uint64(len(data)))
+					copy(combined[16:], data)
+					select {
+					case sendQueue <- streamPacket{Offset: fill.Offset, Data: combined}:
+					case <-ctx.Done():
+						return
+					case <-readerPoolDone:
+						return
+					}
+				}
+			}
+		}(i)
+	}
+
+	// Goroutine 7: SplitDataFrame receiver
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		firstFrame := true
-		receivedFrameNumber := 0 // ⬅️ LICZNIK ODEBRANYCH RAMEK
 
 		for {
 			select {
 			case <-ctx.Done():
-				fmt.Println("SERWER ODBIÓR: ctx.Done()")
 				return
 			case frame, ok := <-conn.GetSplitDataFrameChannel():
-				receivedFrameNumber++ // ⬅️ INKREMENTUJ
-				fmt.Printf("SERWER ODBIÓR: nowa ramka #%d, ok=%v, currentOffset=%d\n", receivedFrameNumber, ok, currentOffset.Load())
 				if !ok {
-					fmt.Println("SERWER ODBIÓR: kanał zamknięty")
 					return
 				}
 
@@ -153,8 +245,6 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 					ServerFileOffset: currentOffset.Load(),
 				})
 
-				fmt.Printf("SERWER ODBIÓR #%d: fileOffset=%d, serverBlockSize=%d, blockOffset=%d, blockSize=%d\n",
-					receivedFrameNumber, frame.FileOffset, frame.ServerBlockSize, frame.BlockOffset, frame.BlockSize)
 				s.mu.Lock()
 				s.FileOffset = frame.FileOffset
 				s.BlockOffset = frame.BlockOffset
@@ -163,9 +253,36 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 				s.mu.Unlock()
 
 				if firstFrame {
-					fmt.Println("FIRST FRAME")
 					firstFrame = false
 					close(startSending)
+				}
+			}
+		}
+	}()
+
+	// Goroutine 8: GapFillFrame receiver
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		gapFillReceived := 0
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case frame, ok := <-conn.GetGapFillFrameChannel():
+				if !ok {
+					return
+				}
+				if len(frame.Data) != 16 {
+					continue
+				}
+				gapFillReceived++
+				fillOffset := binary.BigEndian.Uint64(frame.Data[0:8])
+				fillSize := binary.BigEndian.Uint64(frame.Data[8:16])
+				select {
+				case fillChan <- FillRequest{Offset: fillOffset, Size: fillSize}:
+				default:
 				}
 			}
 		}

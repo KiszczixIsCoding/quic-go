@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -226,9 +227,9 @@ type Conn struct {
 	qlogger   qlogwriter.Recorder
 	logger    utils.Logger
 
-	sendMyFrameChan          chan []byte
+	sendGapFillChan          chan []byte
 	sendSplitDataFrameChan   chan *wire.SplitDataFrame
-	handleTulCustomFrameChan chan *wire.TulCustomFrame
+	handleGapFillFrameChan   chan *wire.GapFillFrame
 	handleSplitDataFrameChan chan *wire.SplitDataFrame
 }
 
@@ -558,9 +559,9 @@ func (c *Conn) preSetup() {
 	c.datagramQueue = newDatagramQueue(c.scheduleSending, c.logger)
 	c.connState.Version = c.version
 
-	c.sendMyFrameChan = make(chan []byte, 100)
+	c.sendGapFillChan = make(chan []byte, 256)
 	c.sendSplitDataFrameChan = make(chan *wire.SplitDataFrame, 10)
-	c.handleTulCustomFrameChan = make(chan *wire.TulCustomFrame, 10)
+	c.handleGapFillFrameChan = make(chan *wire.GapFillFrame, 256)
 	c.handleSplitDataFrameChan = make(chan *wire.SplitDataFrame, 10)
 }
 
@@ -664,10 +665,9 @@ runLoop:
 			case <-c.timer.C:
 			case <-c.sendingScheduled:
 			case <-sendQueueAvailable:
-			// Moja custom zmiana
-			case data := <-c.sendMyFrameChan:
-				//case bytesBlock := <-c.sendMyFrameChan:
-				c.framer.QueueControlFrame(&wire.TulCustomFrame{
+				// Moja custom zmiana
+			case data := <-c.sendGapFillChan:
+				c.framer.QueueControlFrame(&wire.GapFillFrame{
 					Data: data,
 				})
 				c.scheduleSending()
@@ -950,8 +950,8 @@ func (c *Conn) switchToNewPath(tr *Transport, now monotime.Time) {
 	}()
 }
 
-func (c *Conn) GetTulCustomFrameChannel() <-chan *wire.TulCustomFrame {
-	return c.handleTulCustomFrameChan
+func (c *Conn) GetGapFillFrameChannel() <-chan *wire.GapFillFrame {
+	return c.handleGapFillFrameChan
 }
 
 func (c *Conn) GetSplitDataFrameChannel() <-chan *wire.SplitDataFrame {
@@ -1949,9 +1949,9 @@ func (c *Conn) handleFrame(
 		err = c.connIDGenerator.Retire(frame.SequenceNumber, destConnID, rcvTime.Add(3*c.rttStats.PTO(false)))
 	case *wire.HandshakeDoneFrame:
 		err = c.handleHandshakeDoneFrame(rcvTime)
-	case *wire.TulCustomFrame:
+	case *wire.GapFillFrame:
 		select {
-		case c.handleTulCustomFrameChan <- frame:
+		case c.handleGapFillFrameChan <- frame:
 		default:
 		}
 	case *wire.SplitDataFrame:
@@ -2888,8 +2888,12 @@ func (c *Conn) AcceptStream(ctx context.Context) (*Stream, error) {
 	return c.streamsMap.AcceptStream(ctx)
 }
 
-func (c *Conn) SendMyFrame(bytesBlock []byte) {
-	c.sendMyFrameChan <- bytesBlock
+// SendGapFillFrame sends a GapFillFrame encoding a gap-fill request: [8 bytes offset][8 bytes size]
+func (c *Conn) SendGapFillFrame(offset, size uint64) {
+	data := make([]byte, 16)
+	binary.BigEndian.PutUint64(data[0:8], offset)
+	binary.BigEndian.PutUint64(data[8:16], size)
+	c.sendGapFillChan <- data
 }
 
 func (c *Conn) SendSplitDataFrame(fileOffset uint64, blockOffset uint64, blockSize uint64, serverBlockSize uint64) {

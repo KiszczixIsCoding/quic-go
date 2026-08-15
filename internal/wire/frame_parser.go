@@ -168,11 +168,9 @@ func (p *FrameParser) ParseLessCommonFrame(frameType FrameType, data []byte, v p
 		frame, l, err = parseAckFrequencyFrame(data, v)
 	case FrameTypeImmediateAck:
 		frame = &ImmediateAckFrame{}
-	case FrameTypeTulCustom:
-		fmt.Printf("data: %v, len=%d, nil? %v\n", data, len(data), data == nil)
-		frame, l, err = parseTulCustomFrame(data, v)
+	case FrameTypeGapFill:
+		frame, l, err = parseGapFillFrame(data, v)
 	case FrameTypeSplitData:
-		fmt.Printf("data: %v, len=%d, nil? %v\n", data, len(data), data == nil)
 		frame, l, err = parseSplitDataFrame(data, v)
 		err = nil
 	default:

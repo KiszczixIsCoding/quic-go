@@ -52,8 +52,8 @@ type (
 	AckFrequencyFrame = wire.AckFrequencyFrame
 	// An ImmediateAckFrame is an IMMEDIATE_ACK frame.
 	ImmediateAckFrame = wire.ImmediateAckFrame
-	// An TulCustomFrame is an TUL_CUSTOM frame.
-	TulCustomFrame = wire.TulCustomFrame
+	// An GapFillFrame is an GAP_FILL frame.
+	GapFillFrame = wire.GapFillFrame
 	// An SplitDataFrame is an SPLIT_DATA frame.
 	SplitDataFrame = wire.SplitDataFrame
 )
@@ -137,8 +137,8 @@ func (f Frame) Encode(enc *jsontext.Encoder) error {
 		return encodeAckFrequencyFrame(enc, frame)
 	case *ImmediateAckFrame:
 		return encodeImmediateAckFrame(enc, frame)
-	case *TulCustomFrame:
-		return encodeTulCustomFrame(enc, frame)
+	case *GapFillFrame:
+		return encodeGapFillFrame(enc, frame)
 	case *SplitDataFrame:
 		return encodeSplitDataFrame(enc, frame)
 
@@ -489,11 +489,11 @@ func encodeImmediateAckFrame(enc *jsontext.Encoder, _ *ImmediateAckFrame) error 
 	return h.err
 }
 
-func encodeTulCustomFrame(enc *jsontext.Encoder, _ *TulCustomFrame) error {
+func encodeGapFillFrame(enc *jsontext.Encoder, _ *GapFillFrame) error {
 	h := encoderHelper{enc: enc}
 	h.WriteToken(jsontext.BeginObject)
 	h.WriteToken(jsontext.String("frame_type"))
-	h.WriteToken(jsontext.String("tul_custom"))
+	h.WriteToken(jsontext.String("gap_fill"))
 	h.WriteToken(jsontext.EndObject)
 	return h.err
 }

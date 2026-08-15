@@ -7,7 +7,7 @@ import (
 )
 
 type SplitDataFrame struct {
-	FileOffset      uint64 // Offset in file
+	FileOffset      uint64
 	BlockOffset     uint64
 	BlockSize       uint64
 	ServerBlockSize uint64
@@ -60,7 +60,6 @@ func (f *SplitDataFrame) Append(b []byte, version protocol.Version) ([]byte, err
 	return b, nil
 }
 
-// Length of a written frame
 func (f *SplitDataFrame) Length(version protocol.Version) protocol.ByteCount {
 	return 1 + // FrameType
 		protocol.ByteCount(quicvarint.Len(f.FileOffset)) +

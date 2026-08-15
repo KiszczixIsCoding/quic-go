@@ -9,7 +9,8 @@ var (
 	TUL_IP_ADDRESS          = "0.0.0.0:5201"
 	TUL_IP_PUBLIC_ADDRESS   = "212.51.220.6:5201"
 	//TUL_IP_ADDRESS     = "212.51.220.6:45678"
-	CURRENT_IP_ADDRESS    = LOCAL_IP_ADDRESS
 	MTU                   = 1360
 	BLOCK_SIZE_MULTIPLIER = 50
+	SPLIT_TYPE            = "NON-WRR"
+	SCOPE                 = "LOCAL"
 )
