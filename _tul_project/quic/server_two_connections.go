@@ -102,11 +102,11 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 
 			fmt.Println("CurrOffset: ", currentFileOffset)
 			fmt.Println("ServerFileOffset: ", s.FileOffset)
-			if currentFileOffset > s.FileOffset {
-				fmt.Println("Update danych!")
-				currentBlockSize = s.ServerBlockSize
-				currentBlockOffset = s.BlockOffset
-			}
+			//if currentFileOffset > s.FileOffset {
+			fmt.Println("Update danych!")
+			currentBlockSize = s.ServerBlockSize
+			currentBlockOffset = s.BlockOffset
+			//}
 
 			currentFileOffset += currentBlockOffset
 
