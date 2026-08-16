@@ -11,6 +11,7 @@ import (
 	"main/quic/stats"
 	"main/quic/utils"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,10 +48,55 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 
 	var currentOffset atomic.Uint64
 	var sentPacketNumber atomic.Int64
+	var fillChanDropped atomic.Int64
+	var gapFillReceivedCount atomic.Int64
 
 	splitDataLogger := stats.GetInstance()
 	splitDataLogger.Start(logFilename)
 	defer splitDataLogger.Stop(logFilename)
+
+	// CSV log for applied SplitDataFrames
+	appliedLogPath := filepath.Join(filepath.Dir(logFilename), "applied_splitdata.csv")
+	appliedLog, err := os.Create(appliedLogPath)
+	if err != nil {
+		log.Printf("Failed to create applied split data log: %v", err)
+	} else {
+		defer appliedLog.Close()
+		fmt.Fprintln(appliedLog, "timestamp,file_offset,block_offset,block_size,server_block_size,current_offset")
+	}
+
+	// Store all received SplitDataFrames
+	type SplitDataRecord struct {
+		Timestamp        time.Time
+		FileOffset       uint64
+		BlockOffset      uint64
+		BlockSize        uint64
+		ServerBlockSize  uint64
+		ServerFileOffset uint64
+	}
+	var splitDataMu sync.Mutex
+	splitDataStore := make(map[uint64]SplitDataRecord)
+	splitDataSeq := 0
+
+	findClosestSmallerSplitData := func(targetFileOffset uint64) *SplitDataRecord {
+		splitDataMu.Lock()
+		defer splitDataMu.Unlock()
+
+		var best *SplitDataRecord
+		bestDiff := uint64(0)
+
+		for _, rec := range splitDataStore {
+			if rec.FileOffset <= targetFileOffset {
+				diff := targetFileOffset - rec.FileOffset
+				if best == nil || diff < bestDiff {
+					best = &rec
+					bestDiff = diff
+				}
+			}
+		}
+
+		return best
+	}
 
 	fileSize := utils.GetFileSize("../movie.mp4")
 
@@ -71,9 +117,7 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 				log.Printf("WRITE ERR: %T %#v\n", err, err)
 				return
 			}
-			sent := sentPacketNumber.Add(1)
-			fmt.Printf("SERWER WRITER #%d: offset=%d, size=%d\n",
-				sent, pkt.Offset, len(pkt.Data)-16)
+			sentPacketNumber.Add(1)
 		}
 	}()
 
@@ -100,12 +144,16 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 			default:
 			}
 
-			fmt.Println("CurrOffset: ", currentFileOffset)
-			fmt.Println("ServerFileOffset: ", s.FileOffset)
-			//if currentFileOffset > s.FileOffset {
-			fmt.Println("Update danych!")
-			currentBlockSize = s.ServerBlockSize
-			currentBlockOffset = s.BlockOffset
+			if currentFileOffset > s.FileOffset {
+				currentBlockSize = s.ServerBlockSize
+				currentBlockOffset = s.BlockOffset
+			}
+
+			closest := findClosestSmallerSplitData(currentFileOffset)
+			fmt.Println(closest)
+			//if closest != nil {
+			//	currentBlockSize = closest.ServerBlockSize
+			//	currentBlockOffset = closest.BlockOffset
 			//}
 
 			currentFileOffset += currentBlockOffset
@@ -119,6 +167,7 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 				actualBlockSize = fileSize - currentFileOffset
 			}
 
+			fmt.Println("ActualBlock size for sending ", actualBlockSize)
 			data, err := utils.ReadChunk("../movie.mp4", int64(currentFileOffset), int(actualBlockSize))
 			if err != nil {
 				log.Printf("READ ERR: %T %#v\n", err, err)
@@ -243,12 +292,32 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 					ServerFileOffset: currentOffset.Load(),
 				})
 
+				splitDataMu.Lock()
+				splitDataSeq++
+				splitDataStore[uint64(splitDataSeq)] = SplitDataRecord{
+					Timestamp:        time.Now(),
+					FileOffset:       frame.FileOffset,
+					BlockOffset:      frame.BlockOffset,
+					BlockSize:        frame.BlockSize,
+					ServerBlockSize:  frame.ServerBlockSize,
+					ServerFileOffset: currentOffset.Load(),
+				}
+				splitDataMu.Unlock()
+
 				s.mu.Lock()
+				oldOffset := s.FileOffset
 				s.FileOffset = frame.FileOffset
 				s.BlockOffset = frame.BlockOffset
 				s.BlockSize = frame.BlockSize
 				s.ServerBlockSize = frame.ServerBlockSize
 				s.mu.Unlock()
+
+				if appliedLog != nil && frame.FileOffset != oldOffset {
+					ts := time.Now().Format("2006-01-02 15:04:05.000000")
+					fmt.Fprintf(appliedLog, "%s,%d,%d,%d,%d,%d\n",
+						ts, frame.FileOffset, frame.BlockOffset, frame.BlockSize,
+						frame.ServerBlockSize, currentOffset.Load())
+				}
 
 				if firstFrame {
 					firstFrame = false
@@ -258,11 +327,72 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 		}
 	}()
 
+	// Goroutine 9: Periodic diagnostics writer
+	diagPath := filepath.Join(filepath.Dir(logFilename), "gapfill_diag.txt")
+	writeDiag := func() {
+		diagContent := fmt.Sprintf(
+			"gapFillFramesReceived=%d\nfillChanDropped=%d\nconnLevelGapFillFrameDropped=%d\n",
+			gapFillReceivedCount.Load(), fillChanDropped.Load(), conn.GetGapFillFrameDroppedCount(),
+		)
+		if err := os.WriteFile(diagPath, []byte(diagContent), 0644); err != nil {
+			log.Printf("Failed to write gap-fill diagnostics: %v", err)
+		}
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				writeDiag()
+				return
+			case <-ticker.C:
+				writeDiag()
+			}
+		}
+	}()
+
+	// Goroutine 10: Queue-depth diagnostics (high frequency, for correlating
+	// backlog in sendQueue/fillChan with slow gap-fill drain observed at end
+	// of transfer). Written as CSV for easy plotting.
+	queueDiagPath := filepath.Join(filepath.Dir(logFilename), "queue_depth_diag.csv")
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		f, err := os.Create(queueDiagPath)
+		if err != nil {
+			log.Printf("Failed to create queue depth diagnostics file: %v", err)
+			return
+		}
+		defer f.Close()
+		fmt.Fprintln(f, "timestamp,sendQueueLen,fillChanLen,sentPacketNumber,gapFillReceived,fillChanDropped")
+
+		ticker := time.NewTicker(5 * time.Millisecond)
+		defer ticker.Stop()
+		writeRow := func() {
+			fmt.Fprintf(f, "%s,%d,%d,%d,%d,%d\n",
+				time.Now().UTC().Format(time.RFC3339Nano),
+				len(sendQueue), len(fillChan),
+				sentPacketNumber.Load(), gapFillReceivedCount.Load(), fillChanDropped.Load(),
+			)
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				writeRow()
+				return
+			case <-ticker.C:
+				writeRow()
+			}
+		}
+	}()
+
 	// Goroutine 8: GapFillFrame receiver
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		gapFillReceived := 0
 
 		for {
 			select {
@@ -275,12 +405,13 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 				if len(frame.Data) != 16 {
 					continue
 				}
-				gapFillReceived++
+				gapFillReceivedCount.Add(1)
 				fillOffset := binary.BigEndian.Uint64(frame.Data[0:8])
 				fillSize := binary.BigEndian.Uint64(frame.Data[8:16])
 				select {
 				case fillChan <- FillRequest{Offset: fillOffset, Size: fillSize}:
 				default:
+					fillChanDropped.Add(1)
 				}
 			}
 		}
