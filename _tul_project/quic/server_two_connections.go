@@ -11,7 +11,6 @@ import (
 	"main/quic/stats"
 	"main/quic/utils"
 	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -101,7 +100,10 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 			default:
 			}
 
+			fmt.Println("CurrOffset: ", currentFileOffset)
+			fmt.Println("ServerFileOffset: ", s.FileOffset)
 			if currentFileOffset > s.FileOffset {
+				fmt.Println("Update danych!")
 				currentBlockSize = s.ServerBlockSize
 				currentBlockOffset = s.BlockOffset
 			}
@@ -135,7 +137,7 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 			}
 
 			currentOffset.Add(currentBlockSize)
-			currentFileOffset += currentSkip - currentBlockSize
+			currentFileOffset += currentSkip - currentBlockOffset
 
 			if actualBlockSize != currentBlockSize {
 				break
@@ -313,6 +315,11 @@ func main() {
 		ip_address = LOCAL_2_IP_ADDRESS
 	}
 
+	// Tworzy folder `server_<param>/run_<timestamp>/`
+	runDir := fmt.Sprintf("server_%s/run_%s", param, time.Now().Format("20060102_150405"))
+	os.MkdirAll(runDir, 0755)
+
+	// Tworzy listener
 	listener, err := quic.ListenAddr(ip_address, tls, quicConf)
 
 	if err != nil {
@@ -320,6 +327,7 @@ func main() {
 	}
 
 	log.Println("QUIC server listening on address: ", ip_address)
+	log.Println("Run directory: ", runDir)
 
 	for {
 		conn, err := listener.Accept(ctx)
@@ -339,9 +347,7 @@ func main() {
 
 		go func(c *quic.Conn, s *SharedStateServer) {
 			<-c.HandshakeComplete()
-			safe := strings.ReplaceAll(ip_address, ":", "_")
-			ts := time.Now().Format("20060102_150405")
-			logFilename := fmt.Sprintf("stats/splitdata_server_%s_%s.csv", safe, ts)
+			logFilename := fmt.Sprintf("%s/splitdata.csv", runDir)
 			handleServerConn(ctx, c, s, logFilename)
 		}(conn, state)
 	}
