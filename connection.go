@@ -231,6 +231,7 @@ type Conn struct {
 	sendSplitDataFrameChan   chan *wire.SplitDataFrame
 	handleGapFillFrameChan   chan *wire.GapFillFrame
 	handleSplitDataFrameChan chan *wire.SplitDataFrame
+	gapFillFrameDropped      atomic.Int64
 }
 
 var _ streamSender = &Conn{}
@@ -1953,6 +1954,7 @@ func (c *Conn) handleFrame(
 		select {
 		case c.handleGapFillFrameChan <- frame:
 		default:
+			c.gapFillFrameDropped.Add(1)
 		}
 	case *wire.SplitDataFrame:
 		select {
@@ -2894,6 +2896,12 @@ func (c *Conn) SendGapFillFrame(offset, size uint64) {
 	binary.BigEndian.PutUint64(data[0:8], offset)
 	binary.BigEndian.PutUint64(data[8:16], size)
 	c.sendGapFillChan <- data
+}
+
+// GetGapFillFrameDroppedCount returns the number of GapFillFrames that were
+// dropped because the receiving channel buffer was full.
+func (c *Conn) GetGapFillFrameDroppedCount() int64 {
+	return c.gapFillFrameDropped.Load()
 }
 
 func (c *Conn) SendSplitDataFrame(fileOffset uint64, blockOffset uint64, blockSize uint64, serverBlockSize uint64) {

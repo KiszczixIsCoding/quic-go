@@ -10,11 +10,13 @@ import (
 )
 
 type GapEntry struct {
-	Timestamp     time.Time
-	CurrentOffset int64
-	Conn1Offset   int64
-	Conn2Offset   int64
-	Gaps          int
+	Timestamp         time.Time
+	CurrentOffset     int64
+	Conn1Offset       int64
+	Conn2Offset       int64
+	Gaps              int
+	GapsBeforeMin     int // gaps where g.End <= min(offset1, offset2)
+	GapsBetweenOffset int // gaps where g.Start >= min && g.End <= max
 }
 
 type gapFileHandle struct {
@@ -58,7 +60,7 @@ func (l *GapLogger) Start(filename string) error {
 	}
 
 	writer := csv.NewWriter(f)
-	writer.Write([]string{"timestamp", "current_offset", "conn1_offset", "conn2_offset", "gaps"})
+	writer.Write([]string{"timestamp", "current_offset", "conn1_offset", "conn2_offset", "gaps", "gaps_before_min", "gaps_between_offset"})
 	writer.Flush()
 	if writer.Error() != nil {
 		f.Close()
@@ -78,6 +80,8 @@ func (l *GapLogger) Start(filename string) error {
 				fmt.Sprintf("%d", entry.Conn1Offset),
 				fmt.Sprintf("%d", entry.Conn2Offset),
 				fmt.Sprintf("%d", entry.Gaps),
+				fmt.Sprintf("%d", entry.GapsBeforeMin),
+				fmt.Sprintf("%d", entry.GapsBetweenOffset),
 			}
 			if err := writer.Write(record); err != nil {
 				fmt.Printf("[GapLogger] write error: %v\n", err)

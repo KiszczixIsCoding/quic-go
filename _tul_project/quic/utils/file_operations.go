@@ -4,18 +4,25 @@ import (
 	"io"
 	"log"
 	"os"
+	"sync"
 )
 
+var fileCache = struct {
+	sync.Once
+	file *os.File
+	err  error
+}{}
+
 func ReadChunk(path string, offset int64, length int) ([]byte, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
+	fileCache.Once.Do(func() {
+		fileCache.file, fileCache.err = os.Open(path)
+	})
+	if fileCache.err != nil {
+		return nil, fileCache.err
 	}
-	defer file.Close()
 
 	buf := make([]byte, length)
-
-	n, err := file.ReadAt(buf, offset)
+	n, err := fileCache.file.ReadAt(buf, offset)
 	if err != nil && err != io.EOF {
 		return nil, err
 	}
@@ -24,7 +31,7 @@ func ReadChunk(path string, offset int64, length int) ([]byte, error) {
 }
 
 func GetFileSize(path string) uint64 {
-	info, err := os.Stat("../movie.mp4")
+	info, err := os.Stat(path)
 	if err != nil {
 		panic(err)
 	}
@@ -34,11 +41,11 @@ func GetFileSize(path string) uint64 {
 }
 
 func WriteChunk(path string, offset int64, data []byte) int {
-	file, err := os.OpenFile(path, os.O_CREATE, 0644)
-	defer file.Close()
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		panic(err)
 	}
+	defer file.Close()
 	_, err = file.Seek(offset, io.SeekStart)
 	if err != nil {
 		log.Println("FileOperations - seekError:", err)
@@ -46,7 +53,7 @@ func WriteChunk(path string, offset int64, data []byte) int {
 
 	n, err := file.Write(data)
 	if err != nil {
-		log.Println("accept error:", err)
+		log.Println("FileOperations - writeError:", err)
 	}
 
 	return n
