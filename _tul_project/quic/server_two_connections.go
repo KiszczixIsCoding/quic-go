@@ -191,8 +191,6 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 				select {
 				case <-ctx.Done():
 					return
-				case <-readerPoolDone:
-					return
 				case fill := <-fillChan:
 					if fill.Offset >= fileSize {
 						continue
@@ -213,8 +211,6 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 					select {
 					case sendQueue <- streamPacket{Offset: fill.Offset, Data: combined}:
 					case <-ctx.Done():
-						return
-					case <-readerPoolDone:
 						return
 					}
 				}
