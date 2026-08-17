@@ -931,12 +931,12 @@ func main() {
 			//w2 := 1.0 / max(throughput2, 0.01)
 			//total := w1 + w2
 
-			w1 := max(throughput1 / totalThroughput, 0.01)
+			//w1 := min(max(throughput1/totalThroughput, 0.1), 0.9)
 			//w2 := min(max(throughput2 / totalThroughput, 0.01), 0.99)
-			w2 := max(throughput2/totalThroughput, 0.01)
+			w2 := min(max(throughput2/totalThroughput, 0.1), 0.9)
 
 			curr1 = uint64(w2 * float64(totalBlockSize))
-			curr2 = uint64(w1 * float64(totalBlockSize))
+			curr2 = totalBlockSize - curr1
 		}
 
 		fileOffset1 := conn1.CurrentOffset.Load()
@@ -945,7 +945,7 @@ func main() {
 		splitDataLogger.Log(splitData1, ststats.SplitDataFrameEntry{
 			Timestamp:        time.Now(),
 			Direction:        "sent",
-			FileOffset:       fileOffset1,
+			FileOffset:       max(fileOffset1, fileOffset2),
 			BlockOffset:      0,
 			BlockSize:        totalBlockSize,
 			ServerBlockSize:  curr1,
@@ -954,13 +954,14 @@ func main() {
 		splitDataLogger.Log(splitData2, ststats.SplitDataFrameEntry{
 			Timestamp:        time.Now(),
 			Direction:        "sent",
-			FileOffset:       fileOffset2,
+			FileOffset:       max(fileOffset1, fileOffset2),
 			BlockOffset:      curr1,
 			BlockSize:        totalBlockSize,
 			ServerBlockSize:  curr2,
 			ServerFileOffset: fileOffset2,
 		})
 
+		fmt.Println("SPLIT OFFSET: ", max(fileOffset1, fileOffset2))
 		go conn1.Conn.SendSplitDataFrame(max(fileOffset1, fileOffset2), 0, totalBlockSize, curr1)
 		go conn2.Conn.SendSplitDataFrame(max(fileOffset1, fileOffset2), curr1, totalBlockSize, curr2)
 

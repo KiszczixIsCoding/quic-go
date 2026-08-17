@@ -78,17 +78,27 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 	splitDataStore := make(map[uint64]SplitDataRecord)
 	splitDataSeq := 0
 
-	findClosestSmallerSplitData := func(targetFileOffset uint64) *SplitDataRecord {
+	findClosestSmallerSplitData := func(targetFileOffset uint64, targetBlockSize uint64) *SplitDataRecord {
 		splitDataMu.Lock()
 		defer splitDataMu.Unlock()
 
 		var best *SplitDataRecord
-		bestFileOffset := uint64(0)
+		bestSplitIteration := 0
+
+		var iteration int
+		if targetFileOffset != 0 {
+			iteration = int(targetFileOffset / targetBlockSize)
+		}
 
 		for _, rec := range splitDataStore {
-			if rec.ServerFileOffset <= targetFileOffset && rec.ServerFileOffset >= bestFileOffset {
+			var splitIteration int
+			if rec.ServerFileOffset != 0 {
+				splitIteration = int(rec.ServerFileOffset / rec.BlockSize)
+			}
+
+			if iteration <= splitIteration && splitIteration >= bestSplitIteration {
 				best = &rec
-				bestFileOffset = rec.ServerFileOffset
+				bestSplitIteration = splitIteration
 			}
 		}
 
@@ -141,7 +151,7 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 			default:
 			}
 
-			closest := findClosestSmallerSplitData(currentFileOffset)
+			closest := findClosestSmallerSplitData(currentFileOffset, currentSkip)
 			fmt.Println(closest)
 			if closest != nil {
 				fmt.Println("CLOSEST")
