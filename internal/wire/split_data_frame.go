@@ -17,12 +17,14 @@ func parseSplitDataFrame(b []byte, _ protocol.Version) (*SplitDataFrame, int, er
 	fileOffset, l1, err := quicvarint.Parse(b)
 	fmt.Printf("FileOffset data: %v, len=%d, nil? %v\n", fileOffset, l1, err == nil)
 	if err != nil {
+		fmt.Printf("!!! SPLIT_DATA_FRAME PARSE ERROR (fileOffset): %v, raw=% x\n", err, b)
 		return nil, 0, replaceUnexpectedEOF(err)
 	}
 	b = b[l1:]
 
 	blockOffset, l2, err := quicvarint.Parse(b)
 	if err != nil {
+		fmt.Printf("!!! SPLIT_DATA_FRAME PARSE ERROR (blockOffset): %v, raw=% x\n", err, b)
 		return nil, 0, replaceUnexpectedEOF(err)
 	}
 	fmt.Printf("BlockOffset data: %v, len=%d, nil? %v\n", blockOffset, l2, err == nil)
@@ -30,6 +32,7 @@ func parseSplitDataFrame(b []byte, _ protocol.Version) (*SplitDataFrame, int, er
 
 	blockSize, l3, err := quicvarint.Parse(b)
 	if err != nil {
+		fmt.Printf("!!! SPLIT_DATA_FRAME PARSE ERROR (blockSize): %v, raw=% x\n", err, b)
 		return nil, 0, replaceUnexpectedEOF(err)
 	}
 	fmt.Printf("BlockSize data: %v, len=%d, nil? %v\n", blockSize, l3, err == nil)
@@ -37,6 +40,7 @@ func parseSplitDataFrame(b []byte, _ protocol.Version) (*SplitDataFrame, int, er
 
 	serverBlockSize, l4, err := quicvarint.Parse(b)
 	if err != nil {
+		fmt.Printf("!!! SPLIT_DATA_FRAME PARSE ERROR (serverBlockSize): %v, raw=% x\n", err, b)
 		return nil, 0, replaceUnexpectedEOF(err)
 	}
 	fmt.Printf("ServerBlockSize data: %v, len=%d, nil? %v\n", serverBlockSize, l4, err == nil)
