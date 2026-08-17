@@ -88,12 +88,16 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 		var iteration int
 		if targetFileOffset != 0 {
 			iteration = int(targetFileOffset / targetBlockSize)
+		} else {
+			iteration = 0
 		}
 
 		for _, rec := range splitDataStore {
 			var splitIteration int
 			if rec.ServerFileOffset != 0 {
 				splitIteration = int(rec.ServerFileOffset / rec.BlockSize)
+			} else {
+				splitIteration = 0
 			}
 
 			if iteration <= splitIteration && splitIteration >= bestSplitIteration {
