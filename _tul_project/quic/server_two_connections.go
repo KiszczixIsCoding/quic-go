@@ -86,9 +86,9 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 		bestFileOffset := uint64(0)
 
 		for _, rec := range splitDataStore {
-			if rec.FileOffset <= targetFileOffset && rec.FileOffset >= bestFileOffset {
+			if rec.ServerFileOffset <= targetFileOffset && rec.ServerFileOffset >= bestFileOffset {
 				best = &rec
-				bestFileOffset = rec.FileOffset
+				bestFileOffset = rec.ServerFileOffset
 			}
 		}
 
