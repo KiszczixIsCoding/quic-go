@@ -83,15 +83,12 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 		defer splitDataMu.Unlock()
 
 		var best *SplitDataRecord
-		bestDiff := uint64(0)
+		bestFileOffset := uint64(0)
 
 		for _, rec := range splitDataStore {
-			if rec.FileOffset <= targetFileOffset {
-				diff := targetFileOffset - rec.FileOffset
-				if best == nil || diff < bestDiff {
-					best = &rec
-					bestDiff = diff
-				}
+			if rec.FileOffset <= targetFileOffset && rec.FileOffset >= bestFileOffset {
+				best = &rec
+				bestFileOffset = rec.FileOffset
 			}
 		}
 
@@ -144,17 +141,13 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 			default:
 			}
 
-			//if currentFileOffset > s.FileOffset {
-			//	currentBlockSize = s.ServerBlockSize
-			//	currentBlockOffset = s.BlockOffset
-			//}
-
 			closest := findClosestSmallerSplitData(currentFileOffset)
 			fmt.Println(closest)
 			if closest != nil {
 				fmt.Println("CLOSEST")
 				currentBlockSize = closest.ServerBlockSize
 				currentBlockOffset = closest.BlockOffset
+				currentSkip = closest.BlockSize
 			}
 
 			currentFileOffset += currentBlockOffset
@@ -311,6 +304,7 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 				s.BlockOffset = frame.BlockOffset
 				s.BlockSize = frame.BlockSize
 				s.ServerBlockSize = frame.ServerBlockSize
+				s.CurrentOffset = frame.FileOffset
 				s.mu.Unlock()
 
 				if appliedLog != nil && frame.FileOffset != oldOffset {
