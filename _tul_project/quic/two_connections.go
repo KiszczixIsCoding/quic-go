@@ -11,6 +11,7 @@ import (
 	"log"
 	ststats "main/quic/stats"
 	"main/quic/utils"
+	"math"
 	"os"
 	"os/signal"
 	"sort"
@@ -372,11 +373,13 @@ func startLogger(filename string) *os.File {
 		log.Fatalf("Cannot create log file: %v", err)
 	}
 
+	f.WriteString("timestamp,conn_id,offset,data_size,throughput\n")
+
 	logChan = make(chan LogEntry, 1000)
 	go func() {
 		for entry := range logChan {
 			ts := entry.Timestamp.Format("2006-01-02 15:04:05.000000")
-			line := fmt.Sprintf("%s | %s | offset=%d, dataSize=%d, throughput=%.2f MB/s\n",
+			line := fmt.Sprintf("%s,%s,%d,%d,%.2f\n",
 				ts, entry.ConnID, entry.Offset, entry.DataSize, entry.Throughput)
 			_, err := f.WriteString(line)
 			if err != nil {
@@ -448,7 +451,6 @@ func handleClientConn(ctx context.Context, conn *quic.Conn, connID string, out c
 				// 3. Czytaj dokładnie tyle danych
 				dataBuf := make([]byte, dataLength)
 				io.ReadFull(s, dataBuf)
-				fmt.Println("SIZES: ", fileOffset, dataLength, len(dataBuf))
 
 				readLatency := time.Since(readStartTime)
 
@@ -457,8 +459,6 @@ func handleClientConn(ctx context.Context, conn *quic.Conn, connID string, out c
 				if readLatency.Seconds() > 0 {
 					currentThroughput = float64(len(dataBuf)) / readLatency.Seconds() / 1024 / 1024 // kB/s
 				}
-
-				fmt.Printf("[%s] Otrzymałem packet: offset=%d, dataSize=%d, throughput=%.2f MB/s\n", connID, fileOffset, len(dataBuf), currentThroughput)
 
 				// Log do stats/received_packets.csv
 				ststats.GetReceivedPacketLogger().Log("stats/received_packets/received_packets.csv", ststats.ReceivedPacketEntry{
@@ -483,7 +483,6 @@ func handleClientConn(ctx context.Context, conn *quic.Conn, connID string, out c
 
 				// Zapisz statystyki
 				stats.RecordRead(len(dataBuf), readLatency)
-				stats.PrintStats(connID, currentThroughput, readLatency)
 
 				// Zaktualizuj zakresy
 				rangeStart := int64(fileOffset)
@@ -603,7 +602,7 @@ func main() {
 	paramsContent := fmt.Sprintf("MTU: %d\nSPLIT_TYPE: %s\nSCOPE: %s\nBLOCK_SIZE_MULTIPLIER: %d\n", MTU, SPLIT_TYPE, SCOPE, BLOCK_SIZE_MULTIPLIER)
 	os.WriteFile(paramsFile, []byte(paramsContent), 0644)
 
-	_ = startLogger(fmt.Sprintf("%s/packet_log2.txt", runDir))
+	_ = startLogger(fmt.Sprintf("%s/packet_log2.csv", runDir))
 	defer stopLogger()
 
 	startThroughputLogger(fmt.Sprintf("%s/throughput_periodic.csv", runDir))
@@ -725,7 +724,6 @@ func main() {
 	}()
 
 	currentProgress := uint64(0)
-	frameNumber := 0
 	gapFillSent := 0
 	loggedGaps := make(map[int64]bool)
 	conn1Finished := false
@@ -734,62 +732,78 @@ func main() {
 	conn1Stagnant := 0
 	conn2Stagnant := 0
 	const stagnantThreshold = 2
+	var tp1Val atomic.Uint64
+	var tp2Val atomic.Uint64
 
-	// Gap-fill goroutine
+	// Throughput sampler: mierzy co sRTT
+	var tpBytes1, tpBytes2 int64
+	var tpTime time.Time
+	tpTime = time.Now()
+
+	// Gap-fill goroutine (disabled for WRR)
 	gapFillDone := make(chan struct{})
+	if SPLIT_TYPE == "WRR" {
+		close(gapFillDone)
+	}
+
 	gapFillCtx, gapFillCancel := context.WithCancel(context.Background())
 	gapTick := time.NewTicker(1 * time.Millisecond)
 	sentGapFills := make(map[int64]bool)
-	go func() {
-		defer close(gapFillDone)
-		defer gapTick.Stop()
-		for {
-			select {
-			case <-gapFillCtx.Done():
-				return
-			case <-gapSignal:
-			case <-gapTick.C:
-			}
-			fileSize := utils.GetFileSize("../movie.mp4")
-			offset1 := ranges1.GetCurrentOffset()
-			offset2 := ranges2.GetCurrentOffset()
-			_, gapIntervals := GetCombinedGaps(ranges1, ranges2, int64(fileSize))
-			if len(gapIntervals) == 0 {
-				continue
-			}
+	if SPLIT_TYPE != "WRR" {
+		go func() {
+			defer close(gapFillDone)
+			defer gapTick.Stop()
+			for {
+				select {
+				case <-gapFillCtx.Done():
+					return
+				case <-gapSignal:
+				case <-gapTick.C:
+				}
+				fileSize := utils.GetFileSize("../movie.mp4")
+				offset1 := ranges1.GetCurrentOffset()
+				offset2 := ranges2.GetCurrentOffset()
+				_, gapIntervals := GetCombinedGaps(ranges1, ranges2, int64(fileSize))
+				if len(gapIntervals) == 0 {
+					continue
+				}
 
-			limitOffset := max(offset1, offset2)
+				limitOffset := max(offset1, offset2)
 
-			conns := [][2]interface{}{{"conn1", conn1.Conn}, {"conn2", conn2.Conn}}
-			connIdx := 0
-			for _, g := range gapIntervals {
-				if g.End > limitOffset {
-					continue
+				tp1 := math.Float64frombits(tp1Val.Load())
+				tp2 := math.Float64frombits(tp2Val.Load())
+				fasterName := "conn1"
+				fasterConn := conn1.Conn
+				if tp2 > tp1 {
+					fasterName = "conn2"
+					fasterConn = conn2.Conn
 				}
-				if sentGapFills[g.Start] {
-					continue
+
+				for _, g := range gapIntervals {
+					if g.End > limitOffset {
+						continue
+					}
+					if sentGapFills[g.Start] {
+						continue
+					}
+					gapSize := uint64(g.End - g.Start)
+					if gapSize == 0 {
+						continue
+					}
+					sentGapFills[g.Start] = true
+					gapFillSent++
+					gapFillLogger.Log(gapFillLogFile, ststats.GapFillEntry{
+						Timestamp: time.Now(),
+						ConnID:    fasterName,
+						Seq:       gapFillSent,
+						Offset:    g.Start,
+						Size:      int64(gapSize),
+					})
+					fasterConn.SendGapFillFrame(uint64(g.Start), gapSize)
 				}
-				gapSize := uint64(g.End - g.Start)
-				if gapSize == 0 {
-					continue
-				}
-				sentGapFills[g.Start] = true
-				gapFillSent++
-				connIdx++
-				name, c := conns[connIdx%2][0].(string), conns[connIdx%2][1].(*quic.Conn)
-				fmt.Printf("KLIENT GAP-FILL #%d: wysyłam request do %s: offset=%d, size=%d\n",
-					gapFillSent, name, g.Start, gapSize)
-				gapFillLogger.Log(gapFillLogFile, ststats.GapFillEntry{
-					Timestamp: time.Now(),
-					ConnID:    name,
-					Seq:       gapFillSent,
-					Offset:    g.Start,
-					Size:      int64(gapSize),
-				})
-				c.SendGapFillFrame(uint64(g.Start), gapSize)
 			}
-		}
-	}()
+		}()
+	}
 
 	for {
 		if finished.Load() {
@@ -809,20 +823,18 @@ func main() {
 			break
 		}
 
-		frameNumber++
 		stats1.StartWindow()
 		stats2.StartWindow()
 		rtt1 := conn1.Conn.ConnectionStats().SmoothedRTT
 		rtt2 := conn2.Conn.ConnectionStats().SmoothedRTT
 
-		minSRTT := func() time.Duration {
-			if rtt1 < rtt2 {
+		maxSRTT := func() time.Duration {
+			if rtt1 > rtt2 {
 				return rtt1
 			}
 			return rtt2
 		}()
 
-		fmt.Println("Min sRTT: ", minSRTT)
 		_, gapIntervals = GetCombinedGaps(ranges1, ranges2, int64(fileSize))
 		combinedGaps = len(gapIntervals)
 
@@ -845,22 +857,33 @@ func main() {
 		prevServerOffset2 = serverOffset2
 		if conn1Stagnant >= stagnantThreshold && !conn1Finished {
 			conn1Finished = true
-			fmt.Println("KLIENT: conn1 serwer skończył normalne wysyłanie, wchodzę w gap-fill mode")
 		}
 		if conn2Stagnant >= stagnantThreshold && !conn2Finished {
 			conn2Finished = true
-			fmt.Println("KLIENT: conn2 serwer skończył normalne wysyłanie, wchodzę w gap-fill mode")
+		}
+
+		maxOffset := max(offset1, offset2)
+		minOffset := min(offset1, offset2)
+		gapsBeforeMin := 0
+		gapsBetweenOffset := 0
+		for _, g := range gapIntervals {
+			if g.End <= minOffset {
+				gapsBeforeMin++
+			}
+			if g.Start >= minOffset && g.End <= maxOffset {
+				gapsBetweenOffset++
+			}
 		}
 
 		gapLogger.Log(gapLogFile, ststats.GapEntry{
-			Timestamp:     time.Now(),
-			CurrentOffset: max(offset1, offset2),
-			Conn1Offset:   offset1,
-			Conn2Offset:   offset2,
-			Gaps:          combinedGaps,
+			Timestamp:         time.Now(),
+			CurrentOffset:     maxOffset,
+			Conn1Offset:       offset1,
+			Conn2Offset:       offset2,
+			Gaps:              combinedGaps,
+			GapsBeforeMin:     gapsBeforeMin,
+			GapsBetweenOffset: gapsBetweenOffset,
 		})
-		fmt.Printf("GAPS: conn1(offset=%d), conn2(offset=%d), combined_gaps=%d\n", offset1, offset2, combinedGaps)
-		maxOffset := max(offset1, offset2)
 		for _, g := range gapIntervals {
 			if g.End > maxOffset {
 				continue
@@ -869,7 +892,6 @@ func main() {
 				continue
 			}
 			loggedGaps[g.Start] = true
-			fmt.Printf("  gap: [%d, %d)\n", g.Start, g.End)
 			gapDetailLogger.Log(gapDetailLogFile, ststats.GapDetailEntry{
 				Timestamp: time.Now(),
 				Offset:    maxOffset,
@@ -879,38 +901,43 @@ func main() {
 			})
 		}
 
-		throughput1 := stats1.GetCurrentThroughput()
-		throughput2 := stats2.GetCurrentThroughput()
-
 		var curr1, curr2 uint64
 
+		throughput1 := math.Float64frombits(tp1Val.Load())
+		throughput2 := math.Float64frombits(tp2Val.Load())
+		// Update throughput sample every sRTT
+		now := time.Now()
+		elapsed := now.Sub(tpTime).Seconds()
+		if elapsed > 0 {
+			currBytes1 := stats1.GetTotalBytes()
+			currBytes2 := stats2.GetTotalBytes()
+			tp1Val.Store(math.Float64bits(float64(currBytes1-tpBytes1) / elapsed / 1024 / 1024))
+			tp2Val.Store(math.Float64bits(float64(currBytes2-tpBytes2) / elapsed / 1024 / 1024))
+			tpBytes1 = currBytes1
+			tpBytes2 = currBytes2
+			tpTime = now
+		}
 		totalThroughput := throughput1 + throughput2
 		totalBlockSize := uint64(BLOCK_SIZE_MULTIPLIER * MTU)
 
 		if SPLIT_TYPE == "WRR" {
 			curr1 = totalBlockSize / 2
 			curr2 = totalBlockSize / 2
+		} else if totalThroughput == 0 {
+			curr1 = totalBlockSize / 2
+			curr2 = totalBlockSize / 2
 		} else {
-			if totalThroughput == 0 {
-				curr1 = totalBlockSize / 2
-				curr2 = totalBlockSize / 2
-			} else {
-				w1 := 1.0 / max(throughput1, 0.01)
-				w2 := 1.0 / max(throughput2, 0.01)
-				total := w1 + w2
-				curr1 = uint64(w1 / total * float64(totalBlockSize))
-				curr2 = totalBlockSize - curr1
-			}
-		}
+			//w1 := 1.0 / max(throughput1, 0.01)
+			//w2 := 1.0 / max(throughput2, 0.01)
+			//total := w1 + w2
 
-		bpr1 := stats1.BytesPerRTT(rtt1)
-		bpr2 := stats2.BytesPerRTT(rtt2)
-		fmt.Printf("BytesPerRTT: conn1=%d B (rtt=%v), conn2=%d B (rtt=%v)\n", bpr1, rtt1, bpr2, rtt2)
-		fmt.Println("throughput 1 ", throughput1)
-		fmt.Println("throughput 2 ", throughput2)
-		fmt.Println("curr1 ", curr1)
-		fmt.Println("curr2 ", curr2)
-		fmt.Printf("KLIENT: wysyłam SplitDataFrame #%d - curr1=%d, curr2=%d\n", frameNumber, curr1, curr2)
+			w1 := max(throughput1 / totalThroughput, 0.01)
+			//w2 := min(max(throughput2 / totalThroughput, 0.01), 0.99)
+			w2 := max(throughput2/totalThroughput, 0.01)
+
+			curr1 = uint64(w2 * float64(totalBlockSize))
+			curr2 = uint64(w1 * float64(totalBlockSize))
+		}
 
 		fileOffset1 := conn1.CurrentOffset.Load()
 		fileOffset2 := conn2.CurrentOffset.Load()
@@ -934,27 +961,25 @@ func main() {
 			ServerFileOffset: fileOffset2,
 		})
 
-		go conn1.Conn.SendSplitDataFrame(fileOffset1+2*bpr1, 0, totalBlockSize, curr1)
-		go conn2.Conn.SendSplitDataFrame(fileOffset2+2*bpr1, curr1, totalBlockSize, curr2)
+		go conn1.Conn.SendSplitDataFrame(max(fileOffset1, fileOffset2), 0, totalBlockSize, curr1)
+		go conn2.Conn.SendSplitDataFrame(max(fileOffset1, fileOffset2), curr1, totalBlockSize, curr2)
 
-		if combinedGaps != 0 {
-			fmt.Printf("BRAKI: combined_gaps=%d\n", combinedGaps)
-			for _, g := range gapIntervals {
-				fmt.Printf("  gap: [%d, %d)\n", g.Start, g.End)
-			}
-		}
-
-		fmt.Printf("KLIENT: wysłano SplitDataFrame #%d\n", frameNumber)
 		currentProgress += totalBlockSize
 
-		fmt.Printf("Aktualne zakresy conn1: %v\n", ranges1.GetRanges())
-		fmt.Printf("Aktualne zakresy conn2: %v\n", ranges2.GetRanges())
-
-		time.Sleep(minSRTT)
+		time.Sleep(maxSRTT)
 	}
 	gapFillCancel()
 	<-gapFillDone
 	wg.Wait()
+
+	gapFillDiagPath := fmt.Sprintf("%s/gapfill_client_diag.txt", runDir)
+	gapFillDiagContent := fmt.Sprintf(
+		"gapFillSent=%d\nsentGapFillsMapSize=%d\n",
+		gapFillSent, len(sentGapFills),
+	)
+	if err := os.WriteFile(gapFillDiagPath, []byte(gapFillDiagContent), 0644); err != nil {
+		log.Printf("Failed to write client gap-fill diagnostics: %v", err)
+	}
 
 	outputFile := fmt.Sprintf("%s/movie_received.mp4", runDir)
 	if err := receivedBuf.Save(outputFile); err != nil {
