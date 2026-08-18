@@ -164,9 +164,9 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 
 			currentFileOffset += currentBlockOffset
 
-			if currentFileOffset >= fileSize {
-				currentFileOffset -= currentBlockOffset
-			}
+			//if currentFileOffset >= fileSize {
+			//	currentFileOffset -= currentBlockOffset
+			//}
 
 			actualBlockSize := currentBlockSize
 			if currentFileOffset+actualBlockSize > fileSize {
