@@ -673,7 +673,6 @@ runLoop:
 				})
 				c.scheduleSending()
 			case frame := <-c.sendSplitDataFrameChan:
-				print("SPLIT CONNECTION")
 				c.framer.QueueControlFrame(frame)
 				//c.framer.QueueControlFrame(&wire.SplitDataFrame{
 				//	FileOffset:      1,
@@ -1398,7 +1397,6 @@ func (c *Conn) handleLongHeaderPacket(p receivedPacket, hdr *wire.Header) (wasPr
 }
 
 func (c *Conn) handleUnpackError(err error, p receivedPacket, pt qlog.PacketType) (wasQueued bool, _ error) {
-	println("handleUnpackError")
 	switch err {
 	case handshake.ErrKeysDropped:
 		if c.qlogger != nil {
@@ -1792,8 +1790,6 @@ func (c *Conn) handleFrames(
 		frameType, l, err := c.frameParser.ParseType(data, encLevel)
 
 		if err != nil {
-			println("ERR...")
-			fmt.Printf("%v\n", err)
 			// The frame parser skips over PADDING frames, and returns an io.EOF if the PADDING
 			// frames were the last frames in this packet.
 			if err == io.EOF {
@@ -1901,7 +1897,6 @@ func (c *Conn) handleFrames(
 	// We receive a Handshake packet that contains the CRYPTO frame that allows us to complete the handshake,
 	// and an ACK serialized after that CRYPTO frame. In this case, we still want to process the ACK frame.
 	if !handshakeWasComplete && c.handshakeComplete {
-		println("HandshakeNotCompleted")
 		if err := c.handleHandshakeComplete(rcvTime); err != nil {
 			return false, false, nil, err
 		}
@@ -1965,7 +1960,6 @@ func (c *Conn) handleFrame(
 		err = fmt.Errorf("unexpected frame type: %s", reflect.ValueOf(&frame).Elem().Type().Name())
 	}
 
-	fmt.Printf("Error type: %T\n", err)
 	return pathChallenge, err
 }
 
@@ -2001,8 +1995,6 @@ func (c *Conn) handleConnectionCloseFrame(frame *wire.ConnectionCloseFrame) erro
 			ErrorMessage: frame.ReasonPhrase,
 		}
 	}
-
-	fmt.Println(frame.ReasonPhrase)
 
 	return &qerr.TransportError{
 		Remote:       true,
@@ -2739,7 +2731,6 @@ func (c *Conn) appendOneShortHeaderPacket(buf *packetBuffer, maxSize protocol.By
 	startLen := buf.Len()
 	p, err := c.packer.AppendPacket(buf, maxSize, now, c.version)
 	if err != nil {
-		fmt.Printf("Error type: %T, msg: %v\n", err, err)
 		return 0, err
 	}
 	size := buf.Len() - startLen

@@ -12,5 +12,5 @@ var (
 	MTU                   = 1360
 	BLOCK_SIZE_MULTIPLIER = 50
 	SPLIT_TYPE            = "NON-WRR"
-	SCOPE                 = "LOCAL"
+	SCOPE                 = "NON-LOCAL"
 )

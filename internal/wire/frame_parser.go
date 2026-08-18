@@ -172,18 +172,11 @@ func (p *FrameParser) ParseLessCommonFrame(frameType FrameType, data []byte, v p
 		frame, l, err = parseGapFillFrame(data, v)
 	case FrameTypeSplitData:
 		frame, l, err = parseSplitDataFrame(data, v)
-		if err != nil {
-			fmt.Printf("!!! SPLIT_DATA_FRAME PARSE FAILED, MASKING ERROR: %v (frame=%v, l=%d)\n", err, frame, l)
-		}
 		err = nil
 	default:
-		println("Unknown frame")
 		err = errUnknownFrameType
 	}
 	if err != nil {
-		println("frame")
-		println(frameType)
-		println(uint64(frameType))
 		return frame, l, &qerr.TransportError{
 			ErrorCode:    qerr.FrameEncodingError,
 			FrameType:    uint64(frameType),

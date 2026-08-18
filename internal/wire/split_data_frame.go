@@ -1,7 +1,6 @@
 package wire
 
 import (
-	"fmt"
 	"github.com/quic-go/quic-go/internal/protocol"
 	"github.com/quic-go/quic-go/quicvarint"
 )
@@ -15,40 +14,27 @@ type SplitDataFrame struct {
 
 func parseSplitDataFrame(b []byte, _ protocol.Version) (*SplitDataFrame, int, error) {
 	fileOffset, l1, err := quicvarint.Parse(b)
-	fmt.Printf("FileOffset data: %v, len=%d, nil? %v\n", fileOffset, l1, err == nil)
 	if err != nil {
-		fmt.Printf("!!! SPLIT_DATA_FRAME PARSE ERROR (fileOffset): %v, raw=% x\n", err, b)
 		return nil, 0, replaceUnexpectedEOF(err)
 	}
 	b = b[l1:]
 
 	blockOffset, l2, err := quicvarint.Parse(b)
 	if err != nil {
-		fmt.Printf("!!! SPLIT_DATA_FRAME PARSE ERROR (blockOffset): %v, raw=% x\n", err, b)
 		return nil, 0, replaceUnexpectedEOF(err)
 	}
-	fmt.Printf("BlockOffset data: %v, len=%d, nil? %v\n", blockOffset, l2, err == nil)
 	b = b[l2:]
 
 	blockSize, l3, err := quicvarint.Parse(b)
 	if err != nil {
-		fmt.Printf("!!! SPLIT_DATA_FRAME PARSE ERROR (blockSize): %v, raw=% x\n", err, b)
 		return nil, 0, replaceUnexpectedEOF(err)
 	}
-	fmt.Printf("BlockSize data: %v, len=%d, nil? %v\n", blockSize, l3, err == nil)
 	b = b[l3:]
 
 	serverBlockSize, l4, err := quicvarint.Parse(b)
 	if err != nil {
-		fmt.Printf("!!! SPLIT_DATA_FRAME PARSE ERROR (serverBlockSize): %v, raw=% x\n", err, b)
 		return nil, 0, replaceUnexpectedEOF(err)
 	}
-	fmt.Printf("ServerBlockSize data: %v, len=%d, nil? %v\n", serverBlockSize, l4, err == nil)
-
-	fmt.Println(fileOffset)
-	fmt.Println(blockOffset)
-	fmt.Println(blockSize)
-	fmt.Println(serverBlockSize)
 
 	return &SplitDataFrame{FileOffset: fileOffset, BlockOffset: blockOffset, BlockSize: blockSize, ServerBlockSize: serverBlockSize}, l1 + l2 + l3 + l4, nil
 }

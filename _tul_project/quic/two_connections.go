@@ -828,12 +828,14 @@ func main() {
 		rtt1 := conn1.Conn.ConnectionStats().SmoothedRTT
 		rtt2 := conn2.Conn.ConnectionStats().SmoothedRTT
 
-		maxSRTT := func() time.Duration {
-			if rtt1 > rtt2 {
-				return rtt1
-			}
-			return rtt2
-		}()
+		//maxSRTT := func() time.Duration {
+		//	if rtt1 > rtt2 {
+		//		return rtt1
+		//	}
+		//	return rtt2
+		//}()
+
+		minSRTT := min(rtt1, rtt2)
 
 		_, gapIntervals = GetCombinedGaps(ranges1, ranges2, int64(fileSize))
 		combinedGaps = len(gapIntervals)
@@ -967,7 +969,7 @@ func main() {
 
 		currentProgress += totalBlockSize
 
-		time.Sleep(maxSRTT)
+		time.Sleep(minSRTT)
 	}
 	gapFillCancel()
 	<-gapFillDone
