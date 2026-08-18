@@ -109,7 +109,7 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 		return best
 	}
 
-	fileSize := utils.GetFileSize("../movie.mp4")
+	fileSize := utils.GetFileSize("../movie1.mp4")
 
 	// Goroutine 1: Single writer
 	wg.Add(1)
