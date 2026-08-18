@@ -156,14 +156,7 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 			}
 
 			closest := findClosestSmallerSplitData(currentFileOffset, currentSkip)
-			fmt.Println(closest)
-			fmt.Println("SplitDataStore: ", splitDataStore)
-			s.mu.RLock()
-			fmt.Printf("Latest: %+v\n", *s)
-			s.mu.RUnlock()
-			fmt.Println("Current offset: ", currentFileOffset)
 			if closest != nil {
-				fmt.Println("CLOSEST")
 				currentBlockSize = closest.ServerBlockSize
 				currentBlockOffset = closest.BlockOffset
 				currentSkip = closest.BlockSize
