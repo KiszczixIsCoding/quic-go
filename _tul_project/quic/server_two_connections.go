@@ -44,7 +44,7 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 
 	startSending := make(chan struct{})
 	fillChan := make(chan FillRequest, 4096)
-	sendQueue := make(chan streamPacket, 2048)
+	sendQueue := make(chan streamPacket, 32)
 
 	var currentOffset atomic.Uint64
 	var sentPacketNumber atomic.Int64
