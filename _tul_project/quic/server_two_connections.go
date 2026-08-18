@@ -292,8 +292,11 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 				return
 			case frame, ok := <-conn.GetSplitDataFrameChannel():
 				if !ok {
+					fmt.Println("NOT OK, sth wrong with SPLIT DATA FRAME")
 					return
 				}
+
+				fmt.Println("Received frame: ", frame)
 
 				splitDataLogger.Log(logFilename, stats.SplitDataFrameEntry{
 					Timestamp:        time.Now(),
