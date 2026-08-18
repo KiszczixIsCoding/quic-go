@@ -100,7 +100,7 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 				splitIteration = 0
 			}
 
-			if splitIteration >= iteration && splitIteration >= bestSplitIteration {
+			if splitIteration <= iteration && splitIteration >= bestSplitIteration {
 				best = &rec
 				bestSplitIteration = splitIteration
 			}
