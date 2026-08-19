@@ -164,17 +164,13 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 
 			currentFileOffset += currentBlockOffset
 
-			//if currentFileOffset >= fileSize {
-			//	currentFileOffset -= currentBlockOffset
-			//}
+			if currentFileOffset >= fileSize {
+				break
+			}
 
 			actualBlockSize := currentBlockSize
 			if currentFileOffset+actualBlockSize > fileSize {
 				actualBlockSize = fileSize - currentFileOffset
-
-				fmt.Println("FileSize ", fileSize)
-				fmt.Println("Current file offset: ", currentFileOffset)
-				fmt.Println("Actual block size", actualBlockSize)
 			}
 
 			fmt.Println("ActualBlock size for sending ", actualBlockSize)
