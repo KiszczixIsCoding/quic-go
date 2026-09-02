@@ -177,6 +177,11 @@ func (h *sentPacketHandler) removeFromBytesInFlight(p *packet) {
 	}
 }
 
+// BytesInFlight returns the number of bytes sent but not yet acknowledged.
+func (h *sentPacketHandler) BytesInFlight() protocol.ByteCount {
+	return h.bytesInFlight
+}
+
 func (h *sentPacketHandler) DropPackets(encLevel protocol.EncryptionLevel, now monotime.Time) {
 	// The server won't await address validation after the handshake is confirmed.
 	// This applies even if we didn't receive an ACK for a Handshake packet.

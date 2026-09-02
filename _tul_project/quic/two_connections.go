@@ -51,6 +51,9 @@ func handleClientConn(ctx context.Context, conn *quic.Conn, connID string, out c
 					return
 				default:
 				}
+				if finished.Load() {
+					return
+				}
 
 				readStartTime := time.Now()
 
@@ -236,10 +239,15 @@ type loggerSet struct {
 }
 
 func setupLoggers(runDir string) *loggerSet {
+	os.MkdirAll(fmt.Sprintf("%s/stats_rtt", runDir), 0755)
+	os.MkdirAll(fmt.Sprintf("%s/stats_throughput", runDir), 0755)
+	os.MkdirAll(fmt.Sprintf("%s/stats_inflight", runDir), 0755)
+
 	loggers.Packet().Start(fmt.Sprintf("%s/packet_log2.csv", runDir))
 	loggers.Latency().Start(fmt.Sprintf("%s/latency.csv", runDir))
-	loggers.RTT().Start(fmt.Sprintf("%s/rtt.csv", runDir))
-	loggers.Throughput().Start(fmt.Sprintf("%s/throughput_periodic.csv", runDir))
+	loggers.RTT().Start(fmt.Sprintf("%s/stats_rtt/rtt.csv", runDir))
+	loggers.Throughput().Start(fmt.Sprintf("%s/stats_throughput/throughput.csv", runDir))
+	loggers.InFlight().Start(fmt.Sprintf("%s/stats_inflight/inflight.csv", runDir))
 
 	splitDataLogger := ststats.GetInstance()
 	splitData1 := fmt.Sprintf("%s/split_data/splitdata_conn1.csv", runDir)
@@ -289,59 +297,6 @@ func (ls *loggerSet) StopStstats() {
 	ls.gapLogger.Stop(ls.gapLogFile)
 	ls.gapFillLogger.Stop(ls.gapFillLogFile)
 	ls.gapDetailLogger.Stop(ls.gapDetailLogFile)
-}
-
-func startThroughputSampler(st *transferState) {
-	go func() {
-		ticker := time.NewTicker(500 * time.Millisecond)
-		defer ticker.Stop()
-		var prevBytes1, prevBytes2 int64
-		var prevTime time.Time
-		prevTime = time.Now()
-
-		for {
-			if st.finished.Load() {
-				now := time.Now()
-				elapsed := now.Sub(prevTime).Seconds()
-				if elapsed > 0 {
-					curr1Bytes := st.stats1.GetTotalBytes()
-					curr2Bytes := st.stats2.GetTotalBytes()
-					tp1 := float64(curr1Bytes-prevBytes1) / elapsed / 1024 / 1024
-					tp2 := float64(curr2Bytes-prevBytes2) / elapsed / 1024 / 1024
-					loggers.Throughput().Log(loggers.ThroughputSample{
-						Timestamp:       now,
-						Conn1Throughput: tp1,
-						Conn2Throughput: tp2,
-						Conn1TotalBytes: curr1Bytes,
-						Conn2TotalBytes: curr2Bytes,
-					})
-				}
-				return
-			}
-
-			<-ticker.C
-			now := time.Now()
-			elapsed := now.Sub(prevTime).Seconds()
-			if elapsed <= 0 {
-				continue
-			}
-			curr1Bytes := st.stats1.GetTotalBytes()
-			curr2Bytes := st.stats2.GetTotalBytes()
-			tp1 := float64(curr1Bytes-prevBytes1) / elapsed / 1024 / 1024
-			tp2 := float64(curr2Bytes-prevBytes2) / elapsed / 1024 / 1024
-			prevBytes1 = curr1Bytes
-			prevBytes2 = curr2Bytes
-			prevTime = now
-
-			loggers.Throughput().Log(loggers.ThroughputSample{
-				Timestamp:       now,
-				Conn1Throughput: tp1,
-				Conn2Throughput: tp2,
-				Conn1TotalBytes: curr1Bytes,
-				Conn2TotalBytes: curr2Bytes,
-			})
-		}
-	}()
 }
 
 func runGapFiller(st *transferState, gapSignal chan struct{}, gapFillLogger *ststats.GapFillLogger, gapFillLogFile string) (chan struct{}, context.CancelFunc) {
@@ -420,7 +375,9 @@ func runGapFiller(st *transferState, gapSignal chan struct{}, gapFillLogger *sts
 
 func sendSplitLoop(st *transferState, ls *loggerSet) {
 	const stagnantThreshold = 2
-	lastRTTLog := time.Time{}
+	lastSampleLog := time.Time{}
+	var tpPrevBytes1, tpPrevBytes2 int64
+	var tpPrevTime time.Time
 	for {
 		if st.finished.Load() {
 			fmt.Println("KLIENT: plik w całości odebrany, zatrzymuję wysyłanie SplitDataFrame")
@@ -470,12 +427,53 @@ func sendSplitLoop(st *transferState, ls *loggerSet) {
 		rtt1 := st.conn1.Conn.ConnectionStats().SmoothedRTT
 		rtt2 := st.conn2.Conn.ConnectionStats().SmoothedRTT
 
-		// Log RTT (async, non-blocking) co 50 ms
-		rttNow := time.Now()
-		if rttNow.Sub(lastRTTLog) >= 50*time.Millisecond {
-			lastRTTLog = rttNow
-			loggers.RTT().Log(loggers.RTTEntry{Timestamp: rttNow, ConnID: st.conn1.ID, RTT: rtt1})
-			loggers.RTT().Log(loggers.RTTEntry{Timestamp: rttNow, ConnID: st.conn2.ID, RTT: rtt2})
+		// Log RTT + throughput (async, non-blocking) co 100 ms, tylko dla połączeń, które jeszcze wysyłają
+		sampleNow := time.Now()
+		if sampleNow.Sub(lastSampleLog) >= 100*time.Millisecond {
+			lastSampleLog = sampleNow
+			conn1Active := !st.conn1Finished.Load()
+			conn2Active := !st.conn2Finished.Load()
+
+			if conn1Active {
+				loggers.RTT().Log(loggers.RTTEntry{Timestamp: sampleNow, ConnID: st.conn1.ID, RTT: rtt1})
+			}
+			if conn2Active {
+				loggers.RTT().Log(loggers.RTTEntry{Timestamp: sampleNow, ConnID: st.conn2.ID, RTT: rtt2})
+			}
+
+			if conn1Active {
+				loggers.InFlight().Log(loggers.InFlightEntry{Timestamp: sampleNow, ConnID: st.conn1.ID, BytesInFlight: st.conn1.Conn.BytesInFlight()})
+			}
+			if conn2Active {
+				loggers.InFlight().Log(loggers.InFlightEntry{Timestamp: sampleNow, ConnID: st.conn2.ID, BytesInFlight: st.conn2.Conn.BytesInFlight()})
+			}
+
+			if !tpPrevTime.IsZero() {
+				tpElapsed := sampleNow.Sub(tpPrevTime).Seconds()
+				if tpElapsed > 0 {
+					tpBytes1 := st.stats1.GetTotalBytes()
+					tpBytes2 := st.stats2.GetTotalBytes()
+					if conn1Active {
+						loggers.Throughput().Log(loggers.ThroughputEntry{
+							Timestamp:  sampleNow,
+							ConnID:     st.conn1.ID,
+							Throughput: float64(tpBytes1-tpPrevBytes1) / tpElapsed / 1024 / 1024,
+							TotalBytes: tpBytes1,
+						})
+					}
+					if conn2Active {
+						loggers.Throughput().Log(loggers.ThroughputEntry{
+							Timestamp:  sampleNow,
+							ConnID:     st.conn2.ID,
+							Throughput: float64(tpBytes2-tpPrevBytes2) / tpElapsed / 1024 / 1024,
+							TotalBytes: tpBytes2,
+						})
+					}
+				}
+			}
+			tpPrevBytes1 = st.stats1.GetTotalBytes()
+			tpPrevBytes2 = st.stats2.GetTotalBytes()
+			tpPrevTime = sampleNow
 		}
 
 		maxSRTT := func() time.Duration {
@@ -594,7 +592,7 @@ func sendSplitLoop(st *transferState, ls *loggerSet) {
 		}
 
 		//fileoff := uint64(maxOffset)/totalBlockSize*totalBlockSize + 57*totalBlockSize
-		fileoff := uint64(maxOffset)/totalBlockSize*totalBlockSize + 40*totalBlockSize
+		fileoff := uint64(maxOffset)/totalBlockSize*totalBlockSize + 57*totalBlockSize
 		curBlock := fileoff / totalBlockSize
 		if sendSplitFrame && curBlock != st.lastSentBlock {
 			st.lastSentBlock = curBlock
@@ -664,6 +662,7 @@ func finalize(st *transferState, ls *loggerSet, gapFillDone chan struct{}, gapFi
 	loggers.Latency().Stop()
 	loggers.RTT().Stop()
 	loggers.Throughput().Stop()
+	loggers.InFlight().Stop()
 
 	gapFillDiagPath := fmt.Sprintf("%s/gapfill_client_diag.txt", runDir)
 	gapFillDiagContent := fmt.Sprintf(
@@ -717,8 +716,6 @@ func main() {
 	st.conn1, st.conn2 = conn1, conn2
 	st.transferStart = time.Now()
 	st.tpTime = time.Now()
-
-	startThroughputSampler(st)
 
 	gapFillDone, gapFillCancel := runGapFiller(st, gapSignal, ls.gapFillLogger, ls.gapFillLogFile)
 

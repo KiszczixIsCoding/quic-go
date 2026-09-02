@@ -852,6 +852,14 @@ func (c *Conn) ConnectionStats() ConnectionStats {
 	}
 }
 
+// BytesInFlight returns the number of bytes sent but not yet acknowledged.
+func (c *Conn) BytesInFlight() uint64 {
+	if p, ok := c.sentPacketHandler.(ackhandler.BytesInFlightProvider); ok {
+		return uint64(p.BytesInFlight())
+	}
+	return 0
+}
+
 // Time when the connection should time out
 func (c *Conn) nextIdleTimeoutTime() monotime.Time {
 	idleTimeout := max(c.idleTimeout, c.rttStats.PTO(true)*3)

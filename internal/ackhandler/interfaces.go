@@ -37,6 +37,11 @@ type SentPacketHandler interface {
 	MigratedPath(now monotime.Time, initialMaxPacketSize protocol.ByteCount)
 }
 
+// BytesInFlightProvider exposes the current bytes-in-flight for diagnostics.
+type BytesInFlightProvider interface {
+	BytesInFlight() protocol.ByteCount
+}
+
 type sentPacketTracker interface {
 	GetLowestPacketNotConfirmedAcked() protocol.PacketNumber
 	ReceivedPacket(_ protocol.EncryptionLevel, rcvTime monotime.Time)
