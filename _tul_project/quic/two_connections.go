@@ -364,7 +364,7 @@ func runGapFiller(st *transferState, gapSignal chan struct{}, gapFillLogger *sts
 			case <-gapSignal:
 			case <-gapTick.C:
 			}
-			fileSize := utils.GetFileSize("../movie.mp4")
+			fileSize := utils.GetFileSize(FILE_NAME)
 			offset1 := st.ranges1.GetCurrentOffset()
 			offset2 := st.ranges2.GetCurrentOffset()
 			_, gapIntervals := ranges.GetCombinedGaps(st.ranges1, st.ranges2, int64(fileSize))
@@ -420,13 +420,14 @@ func runGapFiller(st *transferState, gapSignal chan struct{}, gapFillLogger *sts
 
 func sendSplitLoop(st *transferState, ls *loggerSet) {
 	const stagnantThreshold = 2
+	lastRTTLog := time.Time{}
 	for {
 		if st.finished.Load() {
 			fmt.Println("KLIENT: plik w całości odebrany, zatrzymuję wysyłanie SplitDataFrame")
 			break
 		}
 
-		fileSize := utils.GetFileSize("../movie.mp4")
+		fileSize := utils.GetFileSize(FILE_NAME)
 		offset1 := st.ranges1.GetCurrentOffset()
 		offset2 := st.ranges2.GetCurrentOffset()
 		_, gapIntervals := ranges.GetCombinedGaps(st.ranges1, st.ranges2, int64(fileSize))
@@ -469,9 +470,13 @@ func sendSplitLoop(st *transferState, ls *loggerSet) {
 		rtt1 := st.conn1.Conn.ConnectionStats().SmoothedRTT
 		rtt2 := st.conn2.Conn.ConnectionStats().SmoothedRTT
 
-		// Log RTT (async, non-blocking)
-		loggers.RTT().Log(loggers.RTTEntry{Timestamp: time.Now(), ConnID: st.conn1.ID, RTT: rtt1})
-		loggers.RTT().Log(loggers.RTTEntry{Timestamp: time.Now(), ConnID: st.conn2.ID, RTT: rtt2})
+		// Log RTT (async, non-blocking) co 50 ms
+		rttNow := time.Now()
+		if rttNow.Sub(lastRTTLog) >= 50*time.Millisecond {
+			lastRTTLog = rttNow
+			loggers.RTT().Log(loggers.RTTEntry{Timestamp: rttNow, ConnID: st.conn1.ID, RTT: rtt1})
+			loggers.RTT().Log(loggers.RTTEntry{Timestamp: rttNow, ConnID: st.conn2.ID, RTT: rtt2})
+		}
 
 		maxSRTT := func() time.Duration {
 			if rtt1 > rtt2 {
@@ -588,7 +593,8 @@ func sendSplitLoop(st *transferState, ls *loggerSet) {
 			fmt.Println("KLIENT: jedno z połączeń zakończone, przestaję wysyłać SplitDataFrame")
 		}
 
-		fileoff := uint64(maxOffset)/totalBlockSize*totalBlockSize + 57*totalBlockSize
+		//fileoff := uint64(maxOffset)/totalBlockSize*totalBlockSize + 57*totalBlockSize
+		fileoff := uint64(maxOffset)/totalBlockSize*totalBlockSize + 40*totalBlockSize
 		curBlock := fileoff / totalBlockSize
 		if sendSplitFrame && curBlock != st.lastSentBlock {
 			st.lastSentBlock = curBlock
@@ -681,7 +687,7 @@ func main() {
 	runDir := fmt.Sprintf("runs/run_%s", time.Now().Format("20060102_150405"))
 	os.MkdirAll(runDir, 0755)
 	paramsFile := fmt.Sprintf("%s/params.txt", runDir)
-	paramsContent := fmt.Sprintf("MTU: %d\nSPLIT_TYPE: %s\nSCOPE: %s\nBLOCK_SIZE_MULTIPLIER: %d\n", MTU, SPLIT_TYPE, SCOPE, BLOCK_SIZE_MULTIPLIER)
+	paramsContent := fmt.Sprintf("MTU: %d\nSPLIT_TYPE: %s\nSCOPE: %s\nBLOCK_SIZE_MULTIPLIER: %d\nFILE: %s\n", MTU, SPLIT_TYPE, SCOPE, BLOCK_SIZE_MULTIPLIER, FILE_NAME)
 	os.WriteFile(paramsFile, []byte(paramsContent), 0644)
 
 	ls := setupLoggers(runDir)
@@ -693,7 +699,7 @@ func main() {
 	wg.Add(2)
 	connCh := make(chan ConnResult, 2)
 	gapSignal := make(chan struct{}, 1)
-	receivedBuf := ranges.NewReceivedBuffer(int64(utils.GetFileSize("../movie.mp4")))
+	receivedBuf := ranges.NewReceivedBuffer(int64(utils.GetFileSize(FILE_NAME)))
 
 	if SCOPE == "LOCAL" {
 		go runConnection(LOCAL_IP_ADDRESS, "conn1", &wg, connCh, st.ranges1, st.stats1, st.finished, ls.rangeLogger, fmt.Sprintf("%s/received_ranges/received_ranges_conn1.csv", runDir), gapSignal, receivedBuf)
