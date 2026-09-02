@@ -375,9 +375,12 @@ func runGapFiller(st *transferState, gapSignal chan struct{}, gapFillLogger *sts
 
 func sendSplitLoop(st *transferState, ls *loggerSet) {
 	const stagnantThreshold = 2
+	const tpZeroLimit = 5
 	lastSampleLog := time.Time{}
 	var tpPrevBytes1, tpPrevBytes2 int64
 	var tpPrevTime time.Time
+	var tpZeroCount1, tpZeroCount2 int
+	var tpDone1, tpDone2 bool
 	for {
 		if st.finished.Load() {
 			fmt.Println("KLIENT: plik w całości odebrany, zatrzymuję wysyłanie SplitDataFrame")
@@ -453,21 +456,43 @@ func sendSplitLoop(st *transferState, ls *loggerSet) {
 				if tpElapsed > 0 {
 					tpBytes1 := st.stats1.GetTotalBytes()
 					tpBytes2 := st.stats2.GetTotalBytes()
-					if conn1Active {
-						loggers.Throughput().Log(loggers.ThroughputEntry{
-							Timestamp:  sampleNow,
-							ConnID:     st.conn1.ID,
-							Throughput: float64(tpBytes1-tpPrevBytes1) / tpElapsed / 1024 / 1024,
-							TotalBytes: tpBytes1,
-						})
+					if conn1Active && !tpDone1 {
+						delta1 := tpBytes1 - tpPrevBytes1
+						if delta1 <= 0 {
+							tpZeroCount1++
+							if tpZeroCount1 >= tpZeroLimit {
+								tpDone1 = true
+							}
+						} else {
+							tpZeroCount1 = 0
+						}
+						if !tpDone1 {
+							loggers.Throughput().Log(loggers.ThroughputEntry{
+								Timestamp:  sampleNow,
+								ConnID:     st.conn1.ID,
+								Throughput: float64(delta1) / tpElapsed / 1024 / 1024,
+								TotalBytes: tpBytes1,
+							})
+						}
 					}
-					if conn2Active {
-						loggers.Throughput().Log(loggers.ThroughputEntry{
-							Timestamp:  sampleNow,
-							ConnID:     st.conn2.ID,
-							Throughput: float64(tpBytes2-tpPrevBytes2) / tpElapsed / 1024 / 1024,
-							TotalBytes: tpBytes2,
-						})
+					if conn2Active && !tpDone2 {
+						delta2 := tpBytes2 - tpPrevBytes2
+						if delta2 <= 0 {
+							tpZeroCount2++
+							if tpZeroCount2 >= tpZeroLimit {
+								tpDone2 = true
+							}
+						} else {
+							tpZeroCount2 = 0
+						}
+						if !tpDone2 {
+							loggers.Throughput().Log(loggers.ThroughputEntry{
+								Timestamp:  sampleNow,
+								ConnID:     st.conn2.ID,
+								Throughput: float64(delta2) / tpElapsed / 1024 / 1024,
+								TotalBytes: tpBytes2,
+							})
+						}
 					}
 				}
 			}
@@ -657,6 +682,17 @@ func finalize(st *transferState, ls *loggerSet, gapFillDone chan struct{}, gapFi
 	<-gapFillDone
 	wg.Wait()
 
+	finalTotal1 := st.stats1.GetTotalBytes()
+	finalTotal2 := st.stats2.GetTotalBytes()
+	finalTotalPath := fmt.Sprintf("%s/stats_throughput/final_totals.txt", runDir)
+	finalTotalContent := fmt.Sprintf(
+		"conn1_total_bytes=%d\nconn2_total_bytes=%d\ncombined_total_bytes=%d\n",
+		finalTotal1, finalTotal2, finalTotal1+finalTotal2,
+	)
+	if err := os.WriteFile(finalTotalPath, []byte(finalTotalContent), 0644); err != nil {
+		log.Printf("Failed to write final totals: %v", err)
+	}
+
 	// Flush loggers before saving results
 	loggers.Packet().Stop()
 	loggers.Latency().Stop()
@@ -708,12 +744,15 @@ func main() {
 		go runConnection(TUL_IP_PUBLIC_ADDRESS, "conn2", &wg, connCh, st.ranges2, st.stats2, st.finished, ls.rangeLogger, fmt.Sprintf("%s/received_ranges/received_ranges_conn2.csv", runDir), gapSignal, receivedBuf)
 	}
 
-	conn1, conn2 := <-connCh, <-connCh
-	if conn1.Err != nil || conn2.Err != nil {
-		log.Fatalf("Error during connection: conn1=%v conn2=%v", conn1.Err, conn2.Err)
+	resA, resB := <-connCh, <-connCh
+	if resA.Err != nil || resB.Err != nil {
+		log.Fatalf("Error during connection: %v / %v", resA.Err, resB.Err)
 	}
-
-	st.conn1, st.conn2 = conn1, conn2
+	if resA.ID == "conn1" {
+		st.conn1, st.conn2 = resA, resB
+	} else {
+		st.conn1, st.conn2 = resB, resA
+	}
 	st.transferStart = time.Now()
 	st.tpTime = time.Now()
 

@@ -11,6 +11,7 @@ Expected CSV layout (produced by the Go client):
     <run_dir>/stats_throughput/throughput.csv  timestamp,conn_id,throughput_mbs,total_bytes
     <run_dir>/stats_inflight/inflight.csv  timestamp,conn_id,bytes_in_flight
     <run_dir>/gaps.csv                     timestamp,current_offset,conn1_offset,conn2_offset,gaps,gaps_before_min,gaps_between_offset
+    <run_dir>/packet_log2.csv              timestamp,conn_id,offset,data_size,throughput
     <run_dir>/latency.csv                  timestamp,conn_id,offset,data_size,latency_ns,latency_ms,throughput_mbps
 """
 
@@ -50,6 +51,16 @@ def save(fig, out_dir, name):
     print("saved", path)
 
 
+CONN_COLORS = {
+    "conn1": "#0078D4",
+    "conn2": "#9E1B32",
+}
+
+
+def conn_color(cid):
+    return CONN_COLORS.get(cid)
+
+
 def _style(ax, xlabel, ylabel, title):
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
@@ -65,7 +76,7 @@ def plot_rtt(run_dir, out_dir):
     df["t"] = rel_time(df["timestamp"])
     fig, ax = plt.subplots(figsize=(10, 5))
     for cid, g in df.groupby("conn_id"):
-        ax.plot(g["t"], g["rtt_ms"], label=cid)
+        ax.plot(g["t"], g["rtt_ms"], label=cid, color=conn_color(cid))
     _style(ax, "Time (s)", "Smoothed RTT (ms)", "Smoothed RTT per connection")
     save(fig, out_dir, "rtt.png")
 
@@ -77,7 +88,7 @@ def plot_throughput(run_dir, out_dir):
     df["t"] = rel_time(df["timestamp"])
     fig, ax = plt.subplots(figsize=(10, 5))
     for cid, g in df.groupby("conn_id"):
-        ax.plot(g["t"], g["throughput_mbs"], label=cid)
+        ax.plot(g["t"], g["throughput_mbs"], label=cid, color=conn_color(cid))
     pivot = df.pivot_table(index="t", columns="conn_id", values="throughput_mbs", aggfunc="mean")
     ax.plot(pivot.index, pivot.sum(axis=1), label="total", linestyle="--")
     _style(ax, "Time (s)", "Throughput (MB/s)", "Throughput per connection + total")
@@ -91,7 +102,7 @@ def plot_inflight(run_dir, out_dir):
     df["t"] = rel_time(df["timestamp"])
     fig, ax = plt.subplots(figsize=(10, 5))
     for cid, g in df.groupby("conn_id"):
-        ax.plot(g["t"], g["bytes_in_flight"], label=cid)
+        ax.plot(g["t"], g["bytes_in_flight"], label=cid, color=conn_color(cid))
     pivot = df.pivot_table(index="t", columns="conn_id", values="bytes_in_flight", aggfunc="mean")
     ax.plot(pivot.index, pivot.sum(axis=1), label="total", linestyle="--")
     _style(ax, "Time (s)", "Bytes in flight", "Bytes in flight per connection + total")
@@ -110,15 +121,17 @@ def plot_gaps(run_dir, out_dir):
 
 
 def plot_progress(run_dir, out_dir):
-    df = load(os.path.join(run_dir, "gaps.csv"))
+    df = load(os.path.join(run_dir, "packet_log2.csv"))
     if df is None:
         return
     df["t"] = rel_time(df["timestamp"])
+    df = df.sort_values("t")
+    mb = 1024 * 1024
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(df["t"], df["current_offset"], label="current (max)")
-    ax.plot(df["t"], df["conn1_offset"], label="conn1")
-    ax.plot(df["t"], df["conn2_offset"], label="conn2")
-    _style(ax, "Time (s)", "Offset (bytes)", "Transfer progress")
+    for cid, g in df.groupby("conn_id"):
+        ax.plot(g["t"], g["data_size"].cumsum() / mb, label=cid, color=conn_color(cid))
+    ax.plot(df["t"], df["data_size"].cumsum() / mb, label="total", linestyle="--")
+    _style(ax, "Time (s)", "Downloaded (MB)", "Cumulative downloaded per connection")
     save(fig, out_dir, "progress.png")
 
 
@@ -129,7 +142,7 @@ def plot_latency(run_dir, out_dir):
     df["t"] = rel_time(df["timestamp"])
     fig, ax = plt.subplots(figsize=(10, 5))
     for cid, g in df.groupby("conn_id"):
-        ax.plot(g["t"], g["latency_ms"], label=cid)
+        ax.plot(g["t"], g["latency_ms"], label=cid, color=conn_color(cid))
     _style(ax, "Time (s)", "Read latency (ms)", "Read latency per connection")
     save(fig, out_dir, "latency.png")
 
