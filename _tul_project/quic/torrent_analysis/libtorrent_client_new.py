@@ -7,8 +7,9 @@ from collections import defaultdict
 from charts import plot_all, CHARTS_DIR
 
 
-def create_client():
 
+
+def create_client():
     ses = lt.session()
 
     ses.apply_settings({

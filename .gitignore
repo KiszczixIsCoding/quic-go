@@ -17,3 +17,5 @@ fuzzing/*/corpus/
 
 gomock_reflect_*/
 _tul_project/quic/runs
+_tul_project/quic/server_local1
+_tul_project/quic/server_local2

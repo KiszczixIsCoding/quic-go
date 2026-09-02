@@ -173,7 +173,6 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 				actualBlockSize = fileSize - currentFileOffset
 			}
 
-			fmt.Println("ActualBlock size for sending ", actualBlockSize)
 			data, err := utils.ReadChunk("../movie.mp4", int64(currentFileOffset), int(actualBlockSize))
 			if err != nil {
 				log.Printf("READ ERR: %T %#v\n", err, err)
@@ -195,9 +194,6 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 			currentFileOffset += currentSkip - currentBlockOffset
 
 			if actualBlockSize != currentBlockSize {
-				fmt.Println("ActualBlock size: ", actualBlockSize)
-				fmt.Println("CurrentBlock size: ", currentBlockSize)
-
 				break
 			}
 		}
@@ -291,8 +287,6 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 					fmt.Println("NOT OK, sth wrong with SPLIT DATA FRAME")
 					return
 				}
-
-				fmt.Println("Received frame: ", frame)
 
 				splitDataLogger.Log(logFilename, stats.SplitDataFrameEntry{
 					Timestamp:        time.Now(),

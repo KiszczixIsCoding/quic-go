@@ -674,15 +674,6 @@ runLoop:
 				c.scheduleSending()
 			case frame := <-c.sendSplitDataFrameChan:
 				c.framer.QueueControlFrame(frame)
-				//c.framer.QueueControlFrame(&wire.SplitDataFrame{
-				//	FileOffset:      1,
-				//	BlockOffset:     1,
-				//	BlockSize:       1,
-				//	ServerBlockSize: 1,
-				//})
-				//c.framer.QueueControlFrame(&wire.TulCustomFrame{
-				//	Data: []byte{0x04},
-				//})
 				c.scheduleSending()
 			case <-c.notifyReceivedPacket:
 				wasProcessed, err := c.handlePackets()

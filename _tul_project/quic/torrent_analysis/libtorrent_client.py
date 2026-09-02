@@ -59,8 +59,6 @@ def format_size(bytes_val):
 
 
 
-
-
 def monitor(handle, session, seed_addrs=None):
     if seed_addrs is None:
         seed_addrs = []
