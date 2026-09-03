@@ -12,5 +12,5 @@ var (
 	BLOCK_SIZE_MULTIPLIER = 50
 	SPLIT_TYPE            = "WRR"
 	SCOPE                 = "NON-LOCAL"
-	FILE_NAME             = "../50.mp4"
+	FILE_NAME             = "../50mb.mp4"
 )
