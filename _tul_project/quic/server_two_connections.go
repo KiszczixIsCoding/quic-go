@@ -334,6 +334,34 @@ func handleServerConn(parentCtx context.Context, conn *quic.Conn, s *SharedState
 		}
 	}()
 
+	// Goroutine: Server-side inflight sampler (bytes of file data in flight)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		inflightPath := filepath.Join(filepath.Dir(logFilename), "server_inflight.csv")
+		f, err := os.Create(inflightPath)
+		if err != nil {
+			log.Printf("Failed to create server inflight log: %v", err)
+			return
+		}
+		defer f.Close()
+		fmt.Fprintln(f, "timestamp,bytes_in_flight")
+
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				fmt.Fprintf(f, "%s,%d\n",
+					time.Now().UTC().Format(time.RFC3339Nano),
+					conn.BytesInFlight(),
+				)
+			}
+		}
+	}()
+
 	// Goroutine 9: Periodic diagnostics writer
 	diagPath := filepath.Join(filepath.Dir(logFilename), "gapfill_diag.txt")
 	writeDiag := func() {

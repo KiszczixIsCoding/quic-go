@@ -56,15 +56,25 @@ CONN_COLORS = {
     "conn2": "#9E1B32",
 }
 
+CONN_LABELS = {
+    "conn1": "azure",
+    "conn2": "tul",
+}
+
 
 def conn_color(cid):
     return CONN_COLORS.get(cid)
+
+
+def conn_label(cid):
+    return CONN_LABELS.get(cid, cid)
 
 
 def _style(ax, xlabel, ylabel, title):
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.set_title(title)
+    ax.set_xlim(left=0)
     ax.grid(True, linestyle="--", alpha=0.5)
     ax.legend()
 
@@ -76,8 +86,8 @@ def plot_rtt(run_dir, out_dir):
     df["t"] = rel_time(df["timestamp"])
     fig, ax = plt.subplots(figsize=(10, 5))
     for cid, g in df.groupby("conn_id"):
-        ax.plot(g["t"], g["rtt_ms"], label=cid, color=conn_color(cid))
-    _style(ax, "Time (s)", "Smoothed RTT (ms)", "Smoothed RTT per connection")
+        ax.plot(g["t"], g["rtt_ms"], label=conn_label(cid), color=conn_color(cid))
+    _style(ax, "Czas (s)", "Wygładzone RTT (ms)", "Wygładzone RTT dla każdego połączenia")
     save(fig, out_dir, "rtt.png")
 
 
@@ -88,10 +98,10 @@ def plot_throughput(run_dir, out_dir):
     df["t"] = rel_time(df["timestamp"])
     fig, ax = plt.subplots(figsize=(10, 5))
     for cid, g in df.groupby("conn_id"):
-        ax.plot(g["t"], g["throughput_mbs"], label=cid, color=conn_color(cid))
+        ax.plot(g["t"], g["throughput_mbs"], label=conn_label(cid), color=conn_color(cid))
     pivot = df.pivot_table(index="t", columns="conn_id", values="throughput_mbs", aggfunc="mean")
-    ax.plot(pivot.index, pivot.sum(axis=1), label="total", linestyle="--")
-    _style(ax, "Time (s)", "Throughput (MB/s)", "Throughput per connection + total")
+    ax.plot(pivot.index, pivot.sum(axis=1), label="łącznie", linestyle="--", color="black")
+    _style(ax, "Czas (s)", "Przepustowość (MB/s)", "Przepustowość dla każdego połączenia")
     save(fig, out_dir, "throughput.png")
 
 
@@ -102,10 +112,10 @@ def plot_inflight(run_dir, out_dir):
     df["t"] = rel_time(df["timestamp"])
     fig, ax = plt.subplots(figsize=(10, 5))
     for cid, g in df.groupby("conn_id"):
-        ax.plot(g["t"], g["bytes_in_flight"], label=cid, color=conn_color(cid))
+        ax.plot(g["t"], g["bytes_in_flight"], label=conn_label(cid), color=conn_color(cid))
     pivot = df.pivot_table(index="t", columns="conn_id", values="bytes_in_flight", aggfunc="mean")
-    ax.plot(pivot.index, pivot.sum(axis=1), label="total", linestyle="--")
-    _style(ax, "Time (s)", "Bytes in flight", "Bytes in flight per connection + total")
+    ax.plot(pivot.index, pivot.sum(axis=1), label="łącznie", linestyle="--", color="black")
+    _style(ax, "Czas (s)", "Dane inflight", "Dane inflight dla każdego połączenia")
     save(fig, out_dir, "inflight.png")
 
 
@@ -115,8 +125,8 @@ def plot_gaps(run_dir, out_dir):
         return
     df["t"] = rel_time(df["timestamp"])
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(df["t"], df["gaps_between_offset"], label="gaps_between_offset")
-    _style(ax, "Time (s)", "Count", "Gaps between offsets over time")
+    ax.plot(df["t"], df["gaps_between_offset"], label="luki między offsetami", color="black")
+    _style(ax, "Czas (s)", "Liczba", "Luki między offsetami w czasie")
     save(fig, out_dir, "gaps.png")
 
 
@@ -129,9 +139,9 @@ def plot_progress(run_dir, out_dir):
     mb = 1024 * 1024
     fig, ax = plt.subplots(figsize=(10, 5))
     for cid, g in df.groupby("conn_id"):
-        ax.plot(g["t"], g["data_size"].cumsum() / mb, label=cid, color=conn_color(cid))
-    ax.plot(df["t"], df["data_size"].cumsum() / mb, label="total", linestyle="--")
-    _style(ax, "Time (s)", "Downloaded (MB)", "Cumulative downloaded per connection")
+        ax.plot(g["t"], g["data_size"].cumsum() / mb, label=conn_label(cid), color=conn_color(cid))
+    ax.plot(df["t"], df["data_size"].cumsum() / mb, label="łącznie", linestyle="--", color="black")
+    _style(ax, "Czas (s)", "Pobrane (MB)", "Kumulacyjnie pobrane dla każdego połączenia")
     save(fig, out_dir, "progress.png")
 
 
@@ -142,9 +152,23 @@ def plot_latency(run_dir, out_dir):
     df["t"] = rel_time(df["timestamp"])
     fig, ax = plt.subplots(figsize=(10, 5))
     for cid, g in df.groupby("conn_id"):
-        ax.plot(g["t"], g["latency_ms"], label=cid, color=conn_color(cid))
-    _style(ax, "Time (s)", "Read latency (ms)", "Read latency per connection")
+        ax.plot(g["t"], g["latency_ms"], label=conn_label(cid), color=conn_color(cid))
+    _style(ax, "Czas (s)", "Opóźnienie odczytu (ms)", "Opóźnienie odczytu dla każdego połączenia")
     save(fig, out_dir, "latency.png")
+
+
+def plot_packet_scatter(run_dir, out_dir):
+    df = load(os.path.join(run_dir, "packet_log2.csv"))
+    if df is None:
+        return
+    df["t"] = rel_time(df["timestamp"])
+    df = df.sort_values("t")
+    kb = 1024
+    fig, ax = plt.subplots(figsize=(10, 5))
+    for cid, g in df.groupby("conn_id"):
+        ax.scatter(g["t"], g["data_size"] / kb, label=conn_label(cid), color=conn_color(cid), s=5, alpha=0.5)
+    _style(ax, "Czas (s)", "Rozmiar pakietu (KB)", "Otrzymane pakiety w czasie")
+    save(fig, out_dir, "packet_scatter.png")
 
 
 def main():
@@ -161,6 +185,7 @@ def main():
     plot_gaps(run_dir, out_dir)
     plot_progress(run_dir, out_dir)
     plot_latency(run_dir, out_dir)
+    plot_packet_scatter(run_dir, out_dir)
 
     print("Done. Charts in", out_dir)
 
