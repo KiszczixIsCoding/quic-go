@@ -75,6 +75,7 @@ def _style(ax, xlabel, ylabel, title):
     ax.set_ylabel(ylabel)
     ax.set_title(title)
     ax.set_xlim(left=0)
+    ax.set_ylim(bottom=0)
     ax.grid(True, linestyle="--", alpha=0.5)
     ax.legend()
 

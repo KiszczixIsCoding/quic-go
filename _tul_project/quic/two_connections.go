@@ -644,8 +644,8 @@ func sendSplitLoop(st *transferState, ls *loggerSet) {
 			go st.conn2.Conn.SendSplitDataFrame(fileoff, curr1, totalBlockSize, curr2)
 		}
 
-		if !st.tailFrameSent && maxOffset < int64(fileSize) && combinedGaps == 0 {
-			tailStart := uint64(fileSize) / totalBlockSize * totalBlockSize
+		tailStart := uint64(fileSize) / totalBlockSize * totalBlockSize
+		if !st.tailFrameSent && maxOffset >= int64(tailStart) && maxOffset < int64(fileSize) && combinedGaps == 0 {
 			ls.splitDataLogger.Log(ls.splitData1, ststats.SplitDataFrameEntry{
 				Timestamp:        time.Now(),
 				Direction:        "sent",
