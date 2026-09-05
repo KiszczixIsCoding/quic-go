@@ -4,7 +4,7 @@ import sys
 import os
 from datetime import datetime
 from collections import defaultdict
-from charts import plot_all, CHARTS_DIR
+from charts import plot_all
 
 
 
@@ -118,12 +118,13 @@ def monitor(handle, session, seed_addrs=None):
     rtt_csv.write("timestamp,conn_id,rtt_ns,rtt_ms\n")
     tp_csv.write("timestamp,conn_id,throughput_mbs,total_bytes\n")
 
-    # Dane do wykresu: lista (elapsed, {peer: bytes_in_window})
-    throughput_samples = []
+    # Dane do wykresów: lista (elapsed, {peer: wartość})
+    throughput_samples = []   # (elapsed, {peer: MB/s w oknie})
+    progress_samples = []     # (elapsed, {peer: narastające MB})
+    rtt_samples = []          # (elapsed, {peer: rtt_ms})
     peer_bytes_total = defaultdict(int)   # narastające bajty per peer
     peer_bytes_prev = {}                  # bajty na początku poprzedniego okna
     last_sample_time = start_time
-    window_start_elapsed = 0.0
     # Dane do scatter plota: lista (elapsed, piece_idx, peers_set)
     piece_events = []
     last_rtt_sample = start_time
@@ -186,24 +187,29 @@ def monitor(handle, session, seed_addrs=None):
         if now - last_rtt_sample >= 0.1:
             last_rtt_sample = now
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+            rtt_window = {}
             for p in peer_infos:
                 peer_ip = f"{p.ip[0]}:{p.ip[1]}"
                 rtt_ms = getattr(p, "rtt", 0)
                 if rtt_ms and rtt_ms > 0:
                     conn = addr_to_conn.get(peer_ip, peer_ip)
                     rtt_values[conn].append(rtt_ms)
+                    rtt_window[peer_ip] = rtt_ms
                     rtt_csv.write(f"{ts},{conn},{int(rtt_ms * 1e6)},{rtt_ms:.6f}\n")
+            if rtt_window:
+                rtt_samples.append((elapsed, rtt_window))
             rtt_csv.flush()
 
-        # Próbkuj throughput co 1s
+        # Próbkuj throughput i progress co 100 ms
         window_elapsed = now - last_sample_time
-        if window_elapsed >= 1.0:
+        if window_elapsed >= 0.1:
             window_bytes = {}
             for peer, total in peer_bytes_total.items():
                 prev = peer_bytes_prev.get(peer, 0)
                 window_bytes[peer] = total - prev
             peer_bytes_prev = dict(peer_bytes_total)
-            throughput_samples.append((window_start_elapsed, window_bytes))
+            throughput_samples.append((elapsed, {peer: wb / window_elapsed / 1024 / 1024 for peer, wb in window_bytes.items()}))
+            progress_samples.append((elapsed, {peer: total / 1024 / 1024 for peer, total in peer_bytes_total.items()}))
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
             for peer, wb in window_bytes.items():
                 tp_mbs = wb / window_elapsed / 1024 / 1024
@@ -212,7 +218,6 @@ def monitor(handle, session, seed_addrs=None):
                 tp_csv.write(f"{ts},{conn},{tp_mbs:.6f},{peer_bytes_total[peer]}\n")
             tp_csv.flush()
             last_sample_time = now
-            window_start_elapsed = elapsed
 
         print(
             f"\r"
@@ -272,8 +277,9 @@ def monitor(handle, session, seed_addrs=None):
             conn, "Throughput (MB/s)", vals)
 
     print("Metryki (rtt, throughput, czas) zapisane do:", run_dir)
-    if throughput_samples or piece_events:
-        plot_all(throughput_samples, piece_events, CHARTS_DIR)
+    if throughput_samples or progress_samples or rtt_samples or piece_events:
+        plot_all(throughput_samples, piece_events, os.path.join(run_dir, "charts"),
+                 progress_samples=progress_samples, rtt_samples=rtt_samples)
 
 
 if __name__ == "__main__":
