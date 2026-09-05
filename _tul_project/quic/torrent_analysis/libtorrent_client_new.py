@@ -59,6 +59,33 @@ def format_size(bytes_val):
     return f"{bytes_val} B"
 
 
+def compute_stats(values):
+    if not values:
+        return 0.0, 0.0, 0.0, 0.0
+    vmin = min(values)
+    vmax = max(values)
+    mean = sum(values) / len(values)
+    var = sum((v - mean) ** 2 for v in values) / len(values)
+    return vmin, vmax, mean, var
+
+
+def write_metric_summary(path, label, section, values, duration=None):
+    with open(path, "w") as f:
+        f.write("=== %s ===\n\n" % label)
+        if values:
+            vmin, vmax, mean, var = compute_stats(values)
+            f.write("--- %s ---\n" % section)
+            f.write("Count: %d\n" % len(values))
+            f.write("Min: %.6f\n" % vmin)
+            f.write("Max: %.6f\n" % vmax)
+            f.write("Mean: %.6f\n" % mean)
+            f.write("Variance: %.6f\n" % var)
+            f.write("StdDev: %.6f\n" % (var ** 0.5))
+        if duration is not None:
+            f.write("\n=== Transfer Duration ===\n")
+            f.write("Total: %.6f s\n" % duration)
+
+
 def monitor(handle, session, seed_addrs=None):
     if seed_addrs is None:
         seed_addrs = []
@@ -66,6 +93,7 @@ def monitor(handle, session, seed_addrs=None):
     piece_peers = {}    # piece_index -> set of peer IPs
     pending_pieces = set()  # pieces that got piece_finished but not all blocks yet
     start_time = time.time()
+    first_block_time = None  # czas pierwszego otrzymanego bloku (pierwszy bajt)
 
     # Mapowanie adresów seedów na etykiety conn (jak w QUIC: conn1, conn2, ...)
     addr_to_conn = {f"{ip}:{port}": "conn%d" % (i + 1) for i, (ip, port) in enumerate(seed_addrs)}
@@ -89,6 +117,9 @@ def monitor(handle, session, seed_addrs=None):
     # Dane do scatter plota: lista (elapsed, piece_idx, peers_set)
     piece_events = []
     last_rtt_sample = start_time
+    # Wartości do summary (jak w QUIC): per conn i combined
+    rtt_values = defaultdict(list)
+    tp_values = defaultdict(list)
 
     while not handle.status().is_seeding:
         alerts = session.pop_alerts()
@@ -103,6 +134,8 @@ def monitor(handle, session, seed_addrs=None):
                 ip = f"{alert.ip[0]}:{alert.ip[1]}" if hasattr(alert, 'ip') else "N/A"
                 print(f"\n[ALERT] {name}: ip={ip} error={err_msg} msg={msg}", flush=True)
             if name == 'block_finished_alert':
+                if first_block_time is None:
+                    first_block_time = time.time()
                 peer_ip = f"{alert.ip[0]}:{alert.ip[1]}"
                 if alert.piece_index not in piece_peers:
                     piece_peers[alert.piece_index] = set()
@@ -145,9 +178,11 @@ def monitor(handle, session, seed_addrs=None):
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
             for p in peer_infos:
                 peer_ip = f"{p.ip[0]}:{p.ip[1]}"
-                rtt_ms = p.rtt
+                rtt_ms = getattr(p, "rtt", 0)
                 if rtt_ms and rtt_ms > 0:
-                    rtt_csv.write(f"{ts},{addr_to_conn.get(peer_ip, peer_ip)},{int(rtt_ms * 1e6)},{rtt_ms:.6f}\n")
+                    conn = addr_to_conn.get(peer_ip, peer_ip)
+                    rtt_values[conn].append(rtt_ms)
+                    rtt_csv.write(f"{ts},{conn},{int(rtt_ms * 1e6)},{rtt_ms:.6f}\n")
             rtt_csv.flush()
 
         # Próbkuj throughput co 1s
@@ -162,7 +197,9 @@ def monitor(handle, session, seed_addrs=None):
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
             for peer, wb in window_bytes.items():
                 tp_mbs = wb / window_elapsed / 1024 / 1024
-                tp_csv.write(f"{ts},{addr_to_conn.get(peer, peer)},{tp_mbs:.6f},{peer_bytes_total[peer]}\n")
+                conn = addr_to_conn.get(peer, peer)
+                tp_values[conn].append(tp_mbs)
+                tp_csv.write(f"{ts},{conn},{tp_mbs:.6f},{peer_bytes_total[peer]}\n")
             tp_csv.flush()
             last_sample_time = now
             window_start_elapsed = elapsed
@@ -198,9 +235,32 @@ def monitor(handle, session, seed_addrs=None):
     print("\nDownload finished")
     rtt_csv.close()
     tp_csv.close()
-    transfer_time = time.time() - start_time
+    if first_block_time is not None:
+        transfer_time = time.time() - first_block_time
+    else:
+        transfer_time = time.time() - start_time
     with open(os.path.join(run_dir, "transfer_time.txt"), "w") as f:
         f.write("transfer_time_s=%.2f\n" % transfer_time)
+
+    # Summary (jak w QUIC): combined + per conn
+    combined_rtt = [v for vals in rtt_values.values() for v in vals]
+    write_metric_summary(
+        os.path.join(run_dir, "stats_rtt", "rtt_summary.txt"),
+        "Combined (all connections)", "Smoothed RTT (ms)", combined_rtt, transfer_time)
+    for conn, vals in rtt_values.items():
+        write_metric_summary(
+            os.path.join(run_dir, "stats_rtt", "rtt_summary_%s.txt" % conn),
+            conn, "Smoothed RTT (ms)", vals)
+
+    combined_tp = [v for vals in tp_values.values() for v in vals]
+    write_metric_summary(
+        os.path.join(run_dir, "stats_throughput", "throughput_summary.txt"),
+        "Combined (all connections)", "Throughput (MB/s)", combined_tp, transfer_time)
+    for conn, vals in tp_values.items():
+        write_metric_summary(
+            os.path.join(run_dir, "stats_throughput", "throughput_summary_%s.txt" % conn),
+            conn, "Throughput (MB/s)", vals)
+
     print("Metryki (rtt, throughput, czas) zapisane do:", run_dir)
     if throughput_samples or piece_events:
         plot_all(throughput_samples, piece_events, CHARTS_DIR)
@@ -222,27 +282,18 @@ if __name__ == "__main__":
 
     handle.set_sequential_download(True)
 
-    # seed_addrs = [
-    #     ("212.51.220.6", 5201),
-    #     ("20.107.170.9", 4443),
-    # ]
-
     seed_addrs = [
-        ("127.0.0.1", 4443),
-        ("127.0.0.1", 4444)
+        ("212.51.220.6", 5201),
+        ("20.107.170.9", 4443),
     ]
+
+    # seed_addrs = [
+    #     ("127.0.0.1", 4443),
+    #     ("127.0.0.1", 4444)
+    # ]
 
     for addr in seed_addrs:
         print("Connecting:", addr)
         handle.connect_peer(addr)
-
-    time.sleep(5)
-
-    for p in handle.get_peer_info():
-        print(
-            p.ip,
-            p.client,
-            p.flags
-        )
 
     monitor(handle, session, seed_addrs)
