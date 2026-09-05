@@ -86,6 +86,16 @@ def write_metric_summary(path, label, section, values, duration=None):
             f.write("Total: %.6f s\n" % duration)
 
 
+def clear_directory(path):
+    for entry in os.listdir(path):
+        full = os.path.join(path, entry)
+        if os.path.isdir(full):
+            import shutil
+            shutil.rmtree(full)
+        else:
+            os.remove(full)
+
+
 def monitor(handle, session, seed_addrs=None):
     if seed_addrs is None:
         seed_addrs = []
@@ -271,6 +281,7 @@ if __name__ == "__main__":
     destination = os.path.join(os.path.dirname(__file__), "downloads")
 
     os.makedirs(destination, exist_ok=True)
+    clear_directory(destination)
 
     session = create_client()
 
