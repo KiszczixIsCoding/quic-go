@@ -1,0 +1,11 @@
+metric,min,max,mean,std,n
+rtt_conn1_mean_ms,86.8,169.26,105.81,21.98,16
+rtt_conn2_mean_ms,58.53,139.4,75.23,20.21,16
+rtt_total_mean_ms,72.67,154.33,90.52,20.95,16
+tp_conn1_mean_mbs,0.0,2.72,1.57,0.52,16
+tp_conn2_mean_mbs,0.0,3.64,2.85,0.83,16
+tp_total_mean_mbs,0.0,4.64,3.8,1.04,16
+transfer_time_s,10.84,13.25,12.41,0.72,16
+n_runs_used,,,16,,
+n_runs_excluded,,,4,,
+excluded_runs,,,run_20260903_083437;run_20260903_083716;run_20260903_084233;run_20260903_084334,,

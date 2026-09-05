@@ -21,6 +21,7 @@ import sys
 
 import matplotlib.pyplot as plt
 import pandas as pd
+from matplotlib.ticker import MultipleLocator, MaxNLocator
 
 
 def find_latest_run(base_dir):
@@ -34,6 +35,30 @@ def load(path):
     if not os.path.exists(path):
         return None
     return pd.read_csv(path)
+
+
+def load_params(run_dir):
+    path = os.path.join(run_dir, "params.txt")
+    params = {}
+    if not os.path.exists(path):
+        return params
+    with open(path) as f:
+        for line in f:
+            if ":" in line:
+                key, val = line.split(":", 1)
+                params[key.strip()] = val.strip()
+    return params
+
+
+def build_title_suffix(params):
+    parts = []
+    split_type = params.get("SPLIT_TYPE", "")
+    if split_type:
+        parts.append("WRR" if split_type == "WRR" else "sterownik")
+    factor = params.get("BLOCK_SIZE_MULTIPLIER", "")
+    if factor:
+        parts.append("%sxMTU" % factor)
+    return (" [" + ", ".join(parts) + "]") if parts else ""
 
 
 def rel_time(series):
@@ -76,39 +101,44 @@ def _style(ax, xlabel, ylabel, title):
     ax.set_title(title)
     ax.set_xlim(left=0)
     ax.set_ylim(bottom=0)
+    _, hi = ax.get_xlim()
+    if hi < 12:
+        ax.set_xlim(right=12)
+    ax.xaxis.set_major_locator(MultipleLocator(2))
     ax.grid(True, linestyle="--", alpha=0.5)
-    ax.legend()
+    handles, labels = ax.get_legend_handles_labels()
+    if labels:
+        ax.legend()
 
 
 def plot_rtt(run_dir, out_dir):
     df = load(os.path.join(run_dir, "stats_rtt", "rtt.csv"))
-    if df is None:
+    if df is None or df.empty:
         return
     df["t"] = rel_time(df["timestamp"])
     fig, ax = plt.subplots(figsize=(10, 5))
     for cid, g in df.groupby("conn_id"):
         ax.plot(g["t"], g["rtt_ms"], label=conn_label(cid), color=conn_color(cid))
-    _style(ax, "Czas (s)", "Wygładzone RTT (ms)", "Wygładzone RTT dla każdego połączenia")
+    suffix = build_title_suffix(load_params(run_dir))
+    _style(ax, "Czas (s)", "Wygładzone RTT (ms)", "Wygładzone RTT dla każdego połączenia" + suffix)
     save(fig, out_dir, "rtt.png")
 
 
 def plot_throughput(run_dir, out_dir):
     df = load(os.path.join(run_dir, "stats_throughput", "throughput.csv"))
-    if df is None:
+    if df is None or df.empty:
         return
     df["t"] = rel_time(df["timestamp"])
     fig, ax = plt.subplots(figsize=(10, 5))
     for cid, g in df.groupby("conn_id"):
         ax.plot(g["t"], g["throughput_mbs"], label=conn_label(cid), color=conn_color(cid))
-    pivot = df.pivot_table(index="t", columns="conn_id", values="throughput_mbs", aggfunc="mean")
-    ax.plot(pivot.index, pivot.sum(axis=1), label="łącznie", linestyle="--", color="black")
-    _style(ax, "Czas (s)", "Przepustowość (MB/s)", "Przepustowość dla każdego połączenia")
+    _style(ax, "Czas (s)", "Przepustowość (MB/s)", "Przepustowość dla każdego połączenia" + build_title_suffix(load_params(run_dir)))
     save(fig, out_dir, "throughput.png")
 
 
 def plot_inflight(run_dir, out_dir):
     df = load(os.path.join(run_dir, "stats_inflight", "inflight.csv"))
-    if df is None:
+    if df is None or df.empty:
         return
     df["t"] = rel_time(df["timestamp"])
     fig, ax = plt.subplots(figsize=(10, 5))
@@ -116,51 +146,58 @@ def plot_inflight(run_dir, out_dir):
         ax.plot(g["t"], g["bytes_in_flight"], label=conn_label(cid), color=conn_color(cid))
     pivot = df.pivot_table(index="t", columns="conn_id", values="bytes_in_flight", aggfunc="mean")
     ax.plot(pivot.index, pivot.sum(axis=1), label="łącznie", linestyle="--", color="black")
-    _style(ax, "Czas (s)", "Dane inflight", "Dane inflight dla każdego połączenia")
+    _style(ax, "Czas (s)", "Dane inflight", "Dane inflight dla każdego połączenia" + build_title_suffix(load_params(run_dir)))
     save(fig, out_dir, "inflight.png")
 
 
 def plot_gaps(run_dir, out_dir):
     df = load(os.path.join(run_dir, "gaps.csv"))
-    if df is None:
+    if df is None or df.empty:
         return
     df["t"] = rel_time(df["timestamp"])
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(df["t"], df["gaps_between_offset"], label="luki między offsetami", color="black")
-    _style(ax, "Czas (s)", "Liczba", "Luki między offsetami w czasie")
+    _style(ax, "Czas (s)", "Liczba", "Luki między offsetami w czasie" + build_title_suffix(load_params(run_dir)))
+    ax.yaxis.set_major_locator(MaxNLocator(integer=True))
     save(fig, out_dir, "gaps.png")
 
 
 def plot_progress(run_dir, out_dir):
     df = load(os.path.join(run_dir, "packet_log2.csv"))
-    if df is None:
+    if df is None or df.empty:
         return
     df["t"] = rel_time(df["timestamp"])
     df = df.sort_values("t")
     mb = 1024 * 1024
+    t_max = df["t"].max()
     fig, ax = plt.subplots(figsize=(10, 5))
     for cid, g in df.groupby("conn_id"):
-        ax.plot(g["t"], g["data_size"].cumsum() / mb, label=conn_label(cid), color=conn_color(cid))
+        t = g["t"].tolist()
+        y = (g["data_size"].cumsum() / mb).tolist()
+        if t and t[-1] < t_max:
+            t.append(t_max)
+            y.append(y[-1])
+        ax.plot(t, y, label=conn_label(cid), color=conn_color(cid))
     ax.plot(df["t"], df["data_size"].cumsum() / mb, label="łącznie", linestyle="--", color="black")
-    _style(ax, "Czas (s)", "Pobrane (MB)", "Kumulacyjnie pobrane dla każdego połączenia")
+    _style(ax, "Czas (s)", "Pobrane (MB)", "Kumulacyjnie pobrane dla każdego połączenia" + build_title_suffix(load_params(run_dir)))
     save(fig, out_dir, "progress.png")
 
 
 def plot_latency(run_dir, out_dir):
     df = load(os.path.join(run_dir, "latency.csv"))
-    if df is None:
+    if df is None or df.empty:
         return
     df["t"] = rel_time(df["timestamp"])
     fig, ax = plt.subplots(figsize=(10, 5))
     for cid, g in df.groupby("conn_id"):
         ax.plot(g["t"], g["latency_ms"], label=conn_label(cid), color=conn_color(cid))
-    _style(ax, "Czas (s)", "Opóźnienie odczytu (ms)", "Opóźnienie odczytu dla każdego połączenia")
+    _style(ax, "Czas (s)", "Opóźnienie odczytu (ms)", "Opóźnienie odczytu dla każdego połączenia" + build_title_suffix(load_params(run_dir)))
     save(fig, out_dir, "latency.png")
 
 
 def plot_packet_scatter(run_dir, out_dir):
     df = load(os.path.join(run_dir, "packet_log2.csv"))
-    if df is None:
+    if df is None or df.empty:
         return
     df["t"] = rel_time(df["timestamp"])
     df = df.sort_values("t")
@@ -168,13 +205,23 @@ def plot_packet_scatter(run_dir, out_dir):
     fig, ax = plt.subplots(figsize=(10, 5))
     for cid, g in df.groupby("conn_id"):
         ax.scatter(g["t"], g["data_size"] / kb, label=conn_label(cid), color=conn_color(cid), s=5, alpha=0.5)
-    _style(ax, "Czas (s)", "Rozmiar pakietu (KB)", "Otrzymane pakiety w czasie")
+    _style(ax, "Czas (s)", "Rozmiar pakietu (KB)", "Otrzymane pakiety w czasie" + build_title_suffix(load_params(run_dir)))
     save(fig, out_dir, "packet_scatter.png")
 
 
 def main():
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    run_dir = sys.argv[1] if len(sys.argv) > 1 else find_latest_run(base_dir)
+    arg = sys.argv[1] if len(sys.argv) > 1 else None
+    if arg is None:
+        run_dir = find_latest_run(base_dir)
+    else:
+        candidate = os.path.join(base_dir, "runs", arg)
+        if os.path.isdir(candidate):
+            run_dir = candidate
+        elif os.path.isdir(arg):
+            run_dir = os.path.abspath(arg)
+        else:
+            raise FileNotFoundError("Run not found: " + arg)
     print("Run dir:", run_dir)
 
     out_dir = os.path.join(run_dir, "charts")

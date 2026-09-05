@@ -9,8 +9,8 @@ var (
 	TUL_IP_PUBLIC_ADDRESS   = "212.51.220.6:5201"
 	//TUL_IP_ADDRESS     = "212.51.220.6:45678"
 	MTU                   = 1360
-	BLOCK_SIZE_MULTIPLIER = 50
-	SPLIT_TYPE            = "WRR"
+	BLOCK_SIZE_MULTIPLIER = 100
+	SPLIT_TYPE            = "NON-WRR"
 	SCOPE                 = "NON-LOCAL"
 	FILE_NAME             = "../50mb.mp4"
 )

@@ -617,7 +617,8 @@ func sendSplitLoop(st *transferState, ls *loggerSet) {
 		}
 
 		//fileoff := uint64(maxOffset)/totalBlockSize*totalBlockSize + 57*totalBlockSize
-		fileoff := uint64(maxOffset)/totalBlockSize*totalBlockSize + 57*totalBlockSize
+		//fileoff := uint64(maxOffset)/totalBlockSize*totalBlockSize + 75*totalBlockSize
+		fileoff := uint64(maxOffset)/totalBlockSize*totalBlockSize + 50*totalBlockSize
 		curBlock := fileoff / totalBlockSize
 		if sendSplitFrame && curBlock != st.lastSentBlock {
 			st.lastSentBlock = curBlock

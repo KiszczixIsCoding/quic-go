@@ -67,6 +67,19 @@ def monitor(handle, session, seed_addrs=None):
     pending_pieces = set()  # pieces that got piece_finished but not all blocks yet
     start_time = time.time()
 
+    # Mapowanie adresów seedów na etykiety conn (jak w QUIC: conn1, conn2, ...)
+    addr_to_conn = {f"{ip}:{port}": "conn%d" % (i + 1) for i, (ip, port) in enumerate(seed_addrs)}
+
+    # Katalog runa z metrykami w tym samym układzie co klient QUIC
+    base_dir = os.path.dirname(__file__)
+    run_dir = os.path.join(base_dir, "runs", "run_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
+    os.makedirs(os.path.join(run_dir, "stats_rtt"), exist_ok=True)
+    os.makedirs(os.path.join(run_dir, "stats_throughput"), exist_ok=True)
+    rtt_csv = open(os.path.join(run_dir, "stats_rtt", "rtt.csv"), "w")
+    tp_csv = open(os.path.join(run_dir, "stats_throughput", "throughput.csv"), "w")
+    rtt_csv.write("timestamp,conn_id,rtt_ns,rtt_ms\n")
+    tp_csv.write("timestamp,conn_id,throughput_mbs,total_bytes\n")
+
     # Dane do wykresu: lista (elapsed, {peer: bytes_in_window})
     throughput_samples = []
     peer_bytes_total = defaultdict(int)   # narastające bajty per peer
@@ -75,6 +88,7 @@ def monitor(handle, session, seed_addrs=None):
     window_start_elapsed = 0.0
     # Dane do scatter plota: lista (elapsed, piece_idx, peers_set)
     piece_events = []
+    last_rtt_sample = start_time
 
     while not handle.status().is_seeding:
         alerts = session.pop_alerts()
@@ -116,14 +130,27 @@ def monitor(handle, session, seed_addrs=None):
                 print(f"\n[{ts}] [+{elapsed:.3f}s] [Piece {piece_idx:3d}] size={format_size(piece_size)} peer={peer}")
 
         status = handle.status()
-        connected_ips = {p.ip for p in handle.get_peer_info()}
+        peer_infos = handle.get_peer_info()
+        connected_ips = {p.ip for p in peer_infos}
         for addr in seed_addrs:
             if addr not in connected_ips:
                 handle.connect_peer(addr)
 
-        # Próbkuj throughput co 1s
         now = time.time()
         elapsed = now - start_time
+
+        # Próbkuj RTT co 100 ms (jak w QUIC)
+        if now - last_rtt_sample >= 0.1:
+            last_rtt_sample = now
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+            for p in peer_infos:
+                peer_ip = f"{p.ip[0]}:{p.ip[1]}"
+                rtt_ms = p.rtt
+                if rtt_ms and rtt_ms > 0:
+                    rtt_csv.write(f"{ts},{addr_to_conn.get(peer_ip, peer_ip)},{int(rtt_ms * 1e6)},{rtt_ms:.6f}\n")
+            rtt_csv.flush()
+
+        # Próbkuj throughput co 1s
         window_elapsed = now - last_sample_time
         if window_elapsed >= 1.0:
             window_bytes = {}
@@ -132,6 +159,11 @@ def monitor(handle, session, seed_addrs=None):
                 window_bytes[peer] = total - prev
             peer_bytes_prev = dict(peer_bytes_total)
             throughput_samples.append((window_start_elapsed, window_bytes))
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+            for peer, wb in window_bytes.items():
+                tp_mbs = wb / window_elapsed / 1024 / 1024
+                tp_csv.write(f"{ts},{addr_to_conn.get(peer, peer)},{tp_mbs:.6f},{peer_bytes_total[peer]}\n")
+            tp_csv.flush()
             last_sample_time = now
             window_start_elapsed = elapsed
 
@@ -164,6 +196,12 @@ def monitor(handle, session, seed_addrs=None):
             print(f"\n[{ts}] [Piece {piece_idx:3d}] size={format_size(piece_size)} peer={peer}")
 
     print("\nDownload finished")
+    rtt_csv.close()
+    tp_csv.close()
+    transfer_time = time.time() - start_time
+    with open(os.path.join(run_dir, "transfer_time.txt"), "w") as f:
+        f.write("transfer_time_s=%.2f\n" % transfer_time)
+    print("Metryki (rtt, throughput, czas) zapisane do:", run_dir)
     if throughput_samples or piece_events:
         plot_all(throughput_samples, piece_events, CHARTS_DIR)
 
@@ -184,9 +222,14 @@ if __name__ == "__main__":
 
     handle.set_sequential_download(True)
 
+    # seed_addrs = [
+    #     ("212.51.220.6", 5201),
+    #     ("20.107.170.9", 4443),
+    # ]
+
     seed_addrs = [
-        ("212.51.220.6", 5201),
-        ("20.107.170.9", 4443),
+        ("127.0.0.1", 4443),
+        ("127.0.0.1", 4444)
     ]
 
     for addr in seed_addrs:

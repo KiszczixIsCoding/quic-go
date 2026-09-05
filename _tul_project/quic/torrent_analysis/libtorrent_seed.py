@@ -15,7 +15,7 @@ def create_session(listen_interface):
         "enable_outgoing_utp": True,
         "enable_incoming_utp": True,
         "connections_limit": 100,
-        # "upload_rate_limit": 2 * 1024 * 1024,  # 2 MB/s
+        "upload_rate_limit": 1 * 1024 * 1024,  # 2 MB/s
     })
     print("Listening on port:", ses.listen_port())
     return ses
@@ -75,7 +75,7 @@ if __name__ == "__main__":
         print(f"  Progress: {status.progress*100:.1f}% state: {status.state}", flush=True)
         time.sleep(1)
         if status.error:
-            print(f"  Error: {status.error.message}", flush=True)
+            print(f"  Error: {status.error}", flush=True)
             break
 
     print(f"Seeding... (Ctrl+C to stop)")
