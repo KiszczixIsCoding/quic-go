@@ -57,6 +57,14 @@ def _save(fig, out_dir, name):
     return path
 
 
+def _t0(samples):
+    """Pierwszy moment z danymi (nawiązanie połączenia) — jak rel_time w QUIC."""
+    for t, pb in samples:
+        if any(v > 0 for v in pb.values()):
+            return t
+    return 0.0
+
+
 def plot_throughput(throughput_samples, out_dir=CHARTS_DIR):
     """Przepustowość per połączenie + łącznie (MB/s). -> out_dir/throughput.png"""
     os.makedirs(out_dir, exist_ok=True)
@@ -64,14 +72,15 @@ def plot_throughput(throughput_samples, out_dir=CHARTS_DIR):
     peer_list, peer_color = _peer_color_map(all_peers)
 
     fig, ax = plt.subplots(figsize=(10, 5))
+    t0 = _t0(throughput_samples)
     for peer in peer_list:
-        times = [t for t, pb in throughput_samples if peer in pb]
+        times = [t - t0 for t, pb in throughput_samples if peer in pb]
         speeds = [pb[peer] for t, pb in throughput_samples if peer in pb]
         ax.plot(times, speeds, label=_peer_label(peer), color=peer_color[peer])
-    total_times = [t for t, pb in throughput_samples]
+    total_times = [t - t0 for t, pb in throughput_samples]
     total_speeds = [sum(pb.values()) for t, pb in throughput_samples]
     ax.plot(total_times, total_speeds, label="łącznie", linestyle="--", color="black")
-    _style(ax, "Czas (s)", "Przepustowość (MB/s)", "Przepustowość dla każdego połączenia")
+    _style(ax, "Czas (s)", "Przepustowość (MB/s)", "Przepustowość dla każdego peer'a")
     return _save(fig, out_dir, "throughput.png")
 
 
@@ -82,11 +91,12 @@ def plot_rtt(rtt_samples, out_dir=CHARTS_DIR):
     peer_list, peer_color = _peer_color_map(all_peers)
 
     fig, ax = plt.subplots(figsize=(10, 5))
+    t0 = _t0(rtt_samples)
     for peer in peer_list:
-        times = [t for t, pb in rtt_samples if peer in pb]
+        times = [t - t0 for t, pb in rtt_samples if peer in pb]
         rtts = [pb[peer] for t, pb in rtt_samples if peer in pb]
         ax.plot(times, rtts, label=_peer_label(peer), color=peer_color[peer])
-    _style(ax, "Czas (s)", "Wygładzone RTT (ms)", "Wygładzone RTT dla każdego połączenia")
+    _style(ax, "Czas (s)", "Wygładzone RTT (ms)", "Wygładzone RTT dla każdego peer'a")
     return _save(fig, out_dir, "rtt.png")
 
 
@@ -97,14 +107,15 @@ def plot_progress(progress_samples, out_dir=CHARTS_DIR):
     peer_list, peer_color = _peer_color_map(all_peers)
 
     fig, ax = plt.subplots(figsize=(10, 5))
+    t0 = _t0(progress_samples)
     for peer in peer_list:
-        times = [t for t, pb in progress_samples if peer in pb]
+        times = [t - t0 for t, pb in progress_samples if peer in pb]
         mbs = [pb[peer] for t, pb in progress_samples if peer in pb]
         ax.plot(times, mbs, label=_peer_label(peer), color=peer_color[peer])
-    total_times = [t for t, pb in progress_samples]
+    total_times = [t - t0 for t, pb in progress_samples]
     total_mbs = [sum(pb.values()) for t, pb in progress_samples]
     ax.plot(total_times, total_mbs, label="łącznie", linestyle="--", color="black")
-    _style(ax, "Czas (s)", "Pobrane (MB)", "Kumulacyjnie pobrane dla każdego połączenia")
+    _style(ax, "Czas (s)", "Pobrane (MB)", "Kumulacyjnie pobrane dla każdego peer'a")
     return _save(fig, out_dir, "progress.png")
 
 
@@ -118,8 +129,9 @@ def plot_pieces_per_peer(piece_events, out_dir=CHARTS_DIR):
     peer_list, peer_color = _peer_color_map(all_peers)
 
     fig, ax = plt.subplots(figsize=(10, 5))
+    t0 = piece_events[0][0] if piece_events else 0.0
     for peer in peer_list:
-        times = [e for e, _, ps in piece_events if peer in ps]
+        times = [e - t0 for e, _, ps in piece_events if peer in ps]
         pieces = [idx for _, idx, ps in piece_events if peer in ps]
         ax.scatter(times, pieces, label=_peer_label(peer), color=peer_color[peer], s=5, alpha=0.5)
     _style(ax, "Czas (s)", "Numer piece", "Piece'y per peer")

@@ -16,7 +16,7 @@ def create_session(listen_interface):
         "enable_outgoing_utp": True,
         "enable_incoming_utp": True,
         "connections_limit": 100,
-        "upload_rate_limit": 4 * 1024 * 1024,  # 2 MB/s
+        "upload_rate_limit": 2 * 1024 * 1024,  # 2 MB/s
     })
     print("Listening on port:", ses.listen_port())
     return ses
